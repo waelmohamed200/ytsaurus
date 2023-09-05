@@ -240,7 +240,7 @@ jobs:
           if [[ $GITHUB_REF =~ test/chyt$ ]];
           then
             mv ../build_qt_debug/ydb/library/yql/tools/mrjob/mrjob ../build_qt/ydb/library/yql/tools/mrjob/mrjob
-            mv ../build_debug/yt/chyt/server/bin/ytserver-clickhouse ../build_debug/yt/chyt/server/bin/ytserver-clickhouse
+            mv ../build_debug/yt/chyt/server/bin/ytserver-clickhouse ../build/yt/chyt/server/bin/ytserver-clickhouse
           fi
 
           # Build ytsaurus core image with relwithdebinfo.
