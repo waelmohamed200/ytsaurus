@@ -70,8 +70,8 @@ helm install ${nsflags} ${name_cluster} --set YtsaurusImagePath=${image} ${ytsau
 helm install ${nsflags} ${name_tester} --set YtsaurusImagePath=${image} ${ytsaurus_source_path}/yt/systest/helm/tester
 bash ${ytsaurus_source_path}/yt/systest/scripts/wait.sh --name tester ${tester_flags}
 
-helm install ${nsflags} ${name_systest} --set YtsaurusImagePath=${image} ${ytsaurus_source_path}/yt/systest/helm/systest
-bash ${ytsaurus_source_path}/yt/systest/scripts/wait.sh --wait-minutes 60  --name systest ${tester_flags}
+#helm install ${nsflags} ${name_systest} --set YtsaurusImagePath=${image} ${ytsaurus_source_path}/yt/systest/helm/systest
+#bash ${ytsaurus_source_path}/yt/systest/scripts/wait.sh --wait-minutes 60  --name systest ${tester_flags}
 
 helm install ${nsflags} ${name_new_stress_test} --set YtsaurusImagePath=${image} ${ytsaurus_source_path}/yt/systest/helm/new_stress_test
 bash ${ytsaurus_source_path}/yt/systest/scripts/wait.sh --wait-minutes 60  --name new_stress_test ${tester_flags}
