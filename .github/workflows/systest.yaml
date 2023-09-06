@@ -1,8 +1,9 @@
 name: Systest
 
 on:
-  schedule:
-    - cron: '0 */4 * * *'
+  push:
+    branches:
+      - ci
 
 jobs:
   start-vm:
