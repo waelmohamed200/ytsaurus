@@ -110,10 +110,14 @@ jobs:
       publish-chyt: true
       publish-local: true
       image-tag: ${{ needs.tag.outputs.image-tag }}
-    runs-on: ${{ needs.start-vm.outputs.label }}
     uses: ./.github/workflows/docker.yaml
 
   systest:
+    name: systest
+    needs:
+      - start-vm
+      - docker
+    runs-on: ${{ needs.start-vm.outputs.label }}
     steps:
       - name: Mark latest nightly
         run: |
