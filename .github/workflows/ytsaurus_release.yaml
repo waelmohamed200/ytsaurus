@@ -48,6 +48,7 @@ jobs:
     with:
       runs-on-value: ${{ needs.start-vm.outputs.label }}
       build-python: true
+      build-strawberry: true
       build-ytsaurus: true
     uses: ./.github/workflows/build.yaml
 
@@ -58,6 +59,7 @@ jobs:
       - build
     outputs:
       image-tag: ${{ steps.tag.outputs.IMAGE_TAG }}
+    runs-on: ${{ needs.start-vm.outputs.label }}
     steps:
       - name: Parse tag
         id: tag
@@ -73,4 +75,7 @@ jobs:
       runs-on-value: ${{ needs.start-vm.outputs.label }}
       publish-ytsaurus: true
       image-tag: ${{ needs.tag.outputs.image-tag }}
+    secrets:
+      DOCKER_HUB_LOGIN: ${{ secrets.DOCKER_HUB_LOGIN }}
+      DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
     uses: ./.github/workflows/docker.yaml

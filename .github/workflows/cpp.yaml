@@ -101,6 +101,9 @@ jobs:
       publish-chyt: true
       publish-local: true
       image-tag: ${{ needs.tag.outputs.image-tag }}
+    secrets:
+      DOCKER_HUB_LOGIN: ${{ secrets.DOCKER_HUB_LOGIN }}
+      DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
     uses: ./.github/workflows/docker.yaml
 
   check:
