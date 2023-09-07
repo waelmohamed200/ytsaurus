@@ -5,19 +5,24 @@ on:
         required: true
         type: string
       build-strawberry:
-        required: true
+        default: false
+        required: false
         type: boolean
       build-ytsaurus:
-        required: true
+        default: false
+        required: false
         type: boolean
       build-chyt:
-        required: true
+        default: false
+        required: false
         type: boolean
       build-query-tracker:
-        required: true
+        default: false
+        required: false
         type: boolean
       build-python:
-        required: true
+        default: false
+        required: false
         type: boolean
 
 jobs:

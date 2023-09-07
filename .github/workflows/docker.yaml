@@ -5,23 +5,23 @@ on:
         required: true
         type: string
       publish-strawberry:
-        required: true
+        required: false
         default: false
         type: boolean
       publish-ytsaurus:
-        required: true
+        required: false
         default: false
         type: boolean
       publish-query-tracker:
-        required: true
+        required: false
         default: false
         type: boolean
       publish-chyt:
-        required: true
+        required: false
         default: false
         type: boolean
       publish-local:
-        required: true
+        required: false
         default: false
         type: boolean
       image-tag:
