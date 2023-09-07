@@ -70,7 +70,7 @@ jobs:
       - name: Parse tag
         id: tag
         run: |
-          echo "IMAGE_TAG=$(echo ${GITHUB_REF#refs/main/docker/query-tracker/})" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$(echo ${GITHUB_REF#refs/*/docker/query-tracker/})" >> $GITHUB_OUTPUT
 
   release:
     name: Release
