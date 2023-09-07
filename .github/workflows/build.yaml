@@ -19,7 +19,7 @@ on:
 
 jobs:
   build:
-    runs-on: ${{ inputs.run-on-value }}
+    # runs-on: ${{ inputs.run-on-value }}
     steps:
       - name: Prepare python virtual environment
         run: |
