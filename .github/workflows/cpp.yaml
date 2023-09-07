@@ -55,7 +55,7 @@ jobs:
       - start-vm
       - checkout
     with:
-      run-on-value: ${{ needs.start-vm.outputs.label }}
+      runs-on-value: ${{ needs.start-vm.outputs.label }}
       build-strawberry: true
       build-ytsaurus: true
       build-query-tracker: true
