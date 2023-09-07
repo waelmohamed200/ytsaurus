@@ -63,32 +63,27 @@ jobs:
     uses: ./.github/workflows/build.yaml
 
   check:
-    name: Run checks
+    name: Check
     needs:
       - start-vm
-      - checkout
       - build
+    with:
+      runs-on-value: ${{ needs.start-vm.outputs.label }}
+    uses: ./.github/workflows/check.yaml
+
+
+  tag:
+    name: Calculate docker tag
+    needs:
+      - start-vm
+      - check
     runs-on: ${{ needs.start-vm.outputs.label }}
+    outputs:
+      image_tag: ${{ steps.tag.outputs.IMAGE_TAG }}
     steps:
-      - name: DockerHub login
-        shell: bash
+      - name: Calculate docker tag
+        id: tag
         run: |
-          echo '${{ secrets.DOCKER_HUB_PASSWORD }}' | docker login --username ${{ secrets.DOCKER_HUB_LOGIN }} --password-stdin
-
-      - name: Download benchmarks
-        uses: robinraju/release-downloader@v1.8
-        with:
-          latest: true
-          fileName: "benchmark-0.0.1.tgz"
-
-      - name: Build and push ytsaurus docker images
-        shell: bash
-        run: |
-          mkdir -p ../docker-ytsaurus-build
-          mkdir -p ../docker-local-build
-          mkdir -p ../docker-query-tracker-build
-          mkdir -p ../docker-chyt-build
-
           if [[ $GITHUB_REF =~ main$ ]];
           then
             IMAGE_TAG=dev
@@ -98,79 +93,38 @@ jobs:
           else
             IMAGE_TAG=nopush
           fi
-          IMAGE_TAG_DEBUG=${IMAGE_TAG}-debug
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-          # Build ytsaurus core image.
-          bash ./ytsaurus/yt/docker/ytsaurus/build.sh --ytsaurus-source-path $(pwd)/ytsaurus --ytsaurus-build-path ../build --output-path ../docker-ytsaurus-build --image-tag ${IMAGE_TAG}
+  docker:
+    name: Docker images
+    needs:
+      - start-vm
+      - tag
+    with:
+      runs-on-value: ${{ needs.start-vm.outputs.label }}
+      publish-strawberry: false
+      publish-ytsaurus: true
+      publish-query-tracker: true
+      publish-chyt: true
+      publish-local: true
+      image-tag: ${{ needs.tag.outputs.image-tag }}
+    runs-on: ${{ needs.start-vm.outputs.label }}
 
-          if [[ $GITHUB_REF =~ main$ ]];
+  systest:
+    steps:
+      - name: Mark latest nightly
+        run: |
+          if [[ ${{ needs.tag.outputs.image-tag }} == 'dev' ]]
           then
-            # Build query-tracker image.
-            bash ./ytsaurus/yt/docker/query-tracker/build.sh --ytsaurus-source-path $(pwd)/ytsaurus --ytsaurus-build-path ../build --qt-build-path ../build_qt --output-path ../docker-query-tracker-build --image-tag ${IMAGE_TAG}
-
-             # Build chyt image.
-            bash ./ytsaurus/yt/docker/chyt/build.sh --ytsaurus-source-path $(pwd)/ytsaurus --chyt-build-path ../build/yt/chyt --output-path ../docker-chyt-build --image-tag ${IMAGE_TAG}
-          fi
-
-          # Build yt local image.
-          bash ./ytsaurus/yt/docker/local/build.sh --ytsaurus-source-path $(pwd)/ytsaurus --ytsaurus-build-path ../build --output-path ../docker-local-build --image-tag ${IMAGE_TAG}
-
-          # Build images with relwithdebinfo binaries.
-          mv ../build_debug/yt/yt/server/all/ytserver-all ../build/yt/yt/server/all/ytserver-all
-
-          if [[ $GITHUB_REF =~ main$ ]];
-          then
-            mv ../build_qt_debug/ydb/library/yql/tools/mrjob/mrjob ../build_qt/ydb/library/yql/tools/mrjob/mrjob
-            mv ../build_debug/yt/chyt/server/bin/ytserver-clickhouse ../build/yt/chyt/server/bin/ytserver-clickhouse
-          fi
-
-          # Build ytsaurus core image with relwithdebinfo.
-          bash ./ytsaurus/yt/docker/ytsaurus/build.sh --ytsaurus-source-path $(pwd)/ytsaurus --ytsaurus-build-path ../build --output-path ../docker-ytsaurus-build --image-tag ${IMAGE_TAG_DEBUG}
-
-          if [[ $GITHUB_REF =~ main$ ]];
-          then
-            # Build query-tracker image with relwithdebinfo.
-            bash ./ytsaurus/yt/docker/query-tracker/build.sh --ytsaurus-source-path $(pwd)/ytsaurus --ytsaurus-build-path ../build --qt-build-path ../build_qt --output-path ../docker-query-tracker-build --image-tag ${IMAGE_TAG_DEBUG}
-
-            # Build chyt image with relwithdebinfo.
-            bash ./ytsaurus/yt/docker/chyt/build.sh --ytsaurus-source-path $(pwd)/ytsaurus --chyt-build-path ../build/yt/chyt --output-path ../docker-chyt-build --image-tag ${IMAGE_TAG_DEBUG}
-          fi
-
-          bash ./ytsaurus/yt/docker/local/build.sh --ytsaurus-source-path $(pwd)/ytsaurus --ytsaurus-build-path ../build --output-path ../docker-local-build --image-tag ${IMAGE_TAG_DEBUG}
-
-          if [[ $IMAGE_TAG != "nopush" ]];
-          then
-            docker push ytsaurus/ytsaurus:${IMAGE_TAG}
-            docker tag ytsaurus/ytsaurus:${IMAGE_TAG} ytsaurus/ytsaurus-nightly:${IMAGE_TAG}-${GITHUB_SHA}
-            docker push ytsaurus/ytsaurus-nightly:${IMAGE_TAG}-${GITHUB_SHA}
-
-            docker push ytsaurus/ytsaurus:${IMAGE_TAG_DEBUG}
-            docker tag ytsaurus/ytsaurus:${IMAGE_TAG_DEBUG} ytsaurus/ytsaurus-nightly:${IMAGE_TAG_DEBUG}-${GITHUB_SHA}
-            docker push ytsaurus/ytsaurus-nightly:${IMAGE_TAG_DEBUG}-${GITHUB_SHA}
-
-            if [[ $GITHUB_REF =~ main$ ]];
-            then
-              docker push ytsaurus/query-tracker:${IMAGE_TAG}
-              docker tag ytsaurus/query-tracker:${IMAGE_TAG} ytsaurus/query-tracker-nightly:${IMAGE_TAG}-${GITHUB_SHA}
-              docker push ytsaurus/query-tracker-nightly:${IMAGE_TAG}-${GITHUB_SHA}
-
-              docker push ytsaurus/query-tracker:${IMAGE_TAG_DEBUG}
-              docker tag ytsaurus/query-tracker:${IMAGE_TAG_DEBUG} ytsaurus/query-tracker-nightly:${IMAGE_TAG_DEBUG}-${GITHUB_SHA}
-              docker push ytsaurus/query-tracker-nightly:${IMAGE_TAG_DEBUG}-${GITHUB_SHA}
-
-              docker push ytsaurus/chyt:${IMAGE_TAG}
-              docker push ytsaurus/chyt:${IMAGE_TAG_DEBUG}
-            fi
-
-            docker push ytsaurus/local:${IMAGE_TAG}
-            docker push ytsaurus/local:${IMAGE_TAG_DEBUG}
-          fi
-
-          if [[ $IMAGE_TAG == 'dev' ]];
-          then
-            docker tag ytsaurus/ytsaurus-nightly:${IMAGE_TAG}-${GITHUB_SHA} ytsaurus/ytsaurus-nightly:latest
+            docker tag ytsaurus/ytsaurus-nightly:dev-${GITHUB_SHA} ytsaurus/ytsaurus-nightly:latest
             docker push ytsaurus/ytsaurus-nightly:latest
           fi
+
+      - name: Download benchmarks
+        uses: robinraju/release-downloader@v1.8
+        with:
+          latest: true
+          fileName: "benchmark-0.0.1.tgz"
 
       - name: Docker systest
         shell: bash
@@ -178,35 +132,6 @@ jobs:
           mkdir -p ../docker-systest-build
           bash ./ytsaurus/yt/docker/systest/build.sh --ytsaurus-source-path $(pwd)/ytsaurus  --ytsaurus-build-path ../build --benchmarks-path benchmark-0.0.1.tgz --output-path ../docker-systest-build --image-tag latest
           docker push ytsaurus/ytsaurus-systest:latest
-
-      - name: Unittests
-        shell: bash
-        run: |
-          cp ./ytsaurus/yt/yt/scripts/run_unittests.sh ../build/
-          cd ../build
-          ./run_unittests.sh
-
-      - name: Prepare pytest environment
-        shell: bash
-        run: |
-          ytsaurus/yt/yt/scripts/prepare_pytest_environment.sh
-
-      - name: Integration tests
-        shell: bash
-        run: |
-          ytsaurus/yt/yt/scripts/run_integration_tests.sh
-
-      - name: Python tests
-        shell: bash
-        run: |
-          ytsaurus/yt/yt/scripts/run_python_tests.sh
-
-      - name: Testmo unittests upload
-        shell: bash
-        run: |
-          export TESTMO_TOKEN="${{ secrets.NEBIUS_TESTMO_TOKEN }}"
-          testmo automation:run:submit --instance https://nebius.testmo.net --project-id 4 --name "Run ${{ github.run_id }}" --source "unittests" --results "../build/junit-*.xml"
-
 
   stop-vm:
     name: Stop VM
