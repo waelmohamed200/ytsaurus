@@ -71,7 +71,6 @@ jobs:
       runs-on-value: ${{ needs.start-vm.outputs.label }}
     uses: ./.github/workflows/check.yaml
 
-
   tag:
     name: Calculate docker tag
     needs:
@@ -87,6 +86,9 @@ jobs:
           if [[ $GITHUB_REF =~ main$ ]];
           then
             IMAGE_TAG=dev
+          elif [[ $GITHUB_REF =~ test ]];
+          then
+            IMAGE_TAG=test
           elif [[ $GITHUB_REF =~ releases ]];
           then
             IMAGE_TAG=dev-${GITHUB_REF#refs/*/stable/}
@@ -109,6 +111,7 @@ jobs:
       publish-local: true
       image-tag: ${{ needs.tag.outputs.image-tag }}
     runs-on: ${{ needs.start-vm.outputs.label }}
+    uses: ./.github/workflows/docker.yaml
 
   systest:
     steps:
