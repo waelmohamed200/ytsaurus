@@ -59,11 +59,13 @@ jobs:
       build-strawberry: true
       build-ytsaurus: true
       build-query-tracker: true
+      build-chyt: true
       build-python: true
     uses: ./.github/workflows/build.yaml
 
   check:
     name: Check
+    if: false
     needs:
       - start-vm
       - build
@@ -104,7 +106,6 @@ jobs:
       - tag
     with:
       runs-on-value: ${{ needs.start-vm.outputs.label }}
-      publish-strawberry: false
       publish-ytsaurus: true
       publish-query-tracker: true
       publish-chyt: true

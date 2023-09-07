@@ -6,18 +6,23 @@ on:
         type: string
       publish-strawberry:
         required: true
+        default: false
         type: boolean
       publish-ytsaurus:
         required: true
+        default: false
         type: boolean
       publish-query-tracker:
         required: true
+        default: false
         type: boolean
       publish-chyt:
         required: true
+        default: false
         type: boolean
       publish-local:
         required: true
+        default: false
         type: boolean
       image-tag:
         required: true
@@ -33,6 +38,7 @@ jobs:
           echo '${{ secrets.DOCKER_HUB_PASSWORD }}' | docker login --username ${{ secrets.DOCKER_HUB_LOGIN }} --password-stdin
 
       - name: Core image
+        if: ${{ inputs.publish-ytsaurus }}
         run: |
           mkdir -p ../docker-ytsaurus-build
           IMAGE_TAG=${{ inputs.image-tag }}
@@ -44,6 +50,7 @@ jobs:
           docker push ytsaurus/ytsaurus-nightly:${IMAGE_TAG}-${GITHUB_SHA}
 
       - name: Query tracker image
+        if: ${{ inputs.publish-query-tracker }}
         run: |
           mkdir -p ../docker-query-tracker-build
           IMAGE_TAG=${{ inputs.image-tag }}
@@ -55,6 +62,7 @@ jobs:
           docker push ytsaurus/query-tracker-nightly:${IMAGE_TAG}-${GITHUB_SHA}
 
       - name: CHYT image
+        if: ${{ inputs.publish-chyt }}
         run: |
           mkdir -p ../docker-chyt-build
           IMAGE_TAG=${{ inputs.image-tag }}
@@ -64,6 +72,7 @@ jobs:
           docker push ytsaurus/chyt:${IMAGE_TAG}
 
       - name: Local image
+        if: ${{ inputs.publish-local }}
         run: |
           mkdir -p ../docker-local-build
           IMAGE_TAG=${{ inputs.image-tag }}
@@ -73,6 +82,7 @@ jobs:
           docker push ytsaurus/local:${IMAGE_TAG}
 
       - name: Core image (relwithdebinfo)
+        if: ${{ inputs.publish-ytsaurus }}
         run: |
           IMAGE_TAG=${{ inputs.image-tag }}-relwithdebinfo
 
@@ -85,6 +95,7 @@ jobs:
           docker push ytsaurus/ytsaurus-nightly:${IMAGE_TAG}-${GITHUB_SHA}
 
       - name: Query tracker image (relwithdebinfo)
+        if: ${{ inputs.publish-query-tracker }}
         run: |
           IMAGE_TAG=${{ inputs.image-tag }}-relwithdebinfo
 
@@ -98,6 +109,7 @@ jobs:
           docker push ytsaurus/query-tracker-nightly:${IMAGE_TAG}-${GITHUB_SHA}
 
       - name: Chyt image (relwithdebinfo)
+        if: ${{ inputs.publish-chyt }}
         run: |
           IMAGE_TAG=${{ inputs.image-tag }}-relwithdebinfo
 
@@ -108,6 +120,7 @@ jobs:
           docker push ytsaurus/chyt:${IMAGE_TAG}
 
       - name: Local image (relwithdebinfo)
+        if: ${{ inputs.publish-local }}
         run: |
           IMAGE_TAG=${{ inputs.image-tag }}-relwithdebinfo
 
@@ -116,150 +129,4 @@ jobs:
           bash ./ytsaurus/yt/docker/local/build.sh --ytsaurus-source-path $(pwd)/ytsaurus --ytsaurus-build-path ../build --output-path ../docker-local-build --image-tag ${IMAGE_TAG_DEBUG}
 
           docker push ytsaurus/local:${IMAGE_TAG}
-
-
-          if [[ $IMAGE_TAG == 'dev' ]];
-          then
-                      fi
-
-
-
-      - name: Prepare python virtual environment
-        run: |
-          python3.11 -m venv ../venv
-
-      - name: Build strawberry controller
-        if: ${{ inputs.build-strawberry }}
-        run: |
-          cd ../ytsaurus/ytsaurus/yt/chyt/controller/cmd/chyt-controller
-          export HOME=${RUNNER_WORKSPACE}
-          /opt/go/bin/go build
-
-      - name: Configure ytsaurus
-        if: ${{ inputs.build-ytsaurus }}
-        run: |
-          mkdir -p ../build
-          cd ../build
-          rm -rf *
-          cmake \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE=../ytsaurus/ytsaurus/clang.toolchain \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            ../ytsaurus/ytsaurus
-
-      - name: Configure ytsaurus (relwithdebinfo)
-        if: ${{ inputs.build-ytsaurus }}
-        run: |
-          mkdir -p ../build_relwithdebinfo
-          cd ../build_relwithdebinfo
-          rm -rf *
-          cmake \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_TOOLCHAIN_FILE=../ytsaurus/ytsaurus/clang.toolchain \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            ../ytsaurus/ytsaurus
-
-      - name: Configure query tracker
-        if: ${{ inputs.build-query-tracker }}
-        run: |
-          #TODO: install it inside vm image.
-          sudo apt-get -y install antlr3 libaio1 libaio-dev
-
-          #TODO: remove -DMKQL_DISABLE_CODEGEN after YT-19852.
-          mkdir -p ../build_qt
-          cd ../build_qt
-          rm -rf *
-          cmake \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER_LAUNCHER=/usr/local/bin/ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=/usr/local/bin/ccache \
-            -DCMAKE_TOOLCHAIN_FILE=../ytsaurus/ydb/clang.toolchain \
-            -DCMAKE_C_FLAGS_RELEASE="-O2 -UNDEBUG -DMKQL_DISABLE_CODEGEN" \
-            -DCMAKE_CXX_FLAGS_RELEASE="-O2 -UNDEBUG -DMKQL_DISABLE_CODEGEN" \
-            -DCMAKE_C_FLAGS="-O2 -UNDEBUG -DMKQL_DISABLE_CODEGEN" \
-            -DCMAKE_CXX_FLAGS="-O2 -UNDEBUG -DMKQL_DISABLE_CODEGEN" \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=On \
-            ../ytsaurus/ydb
-
-      - name: Configure query tracker (relwithdebinfo)
-        if: ${{ inputs.build-query-tracker }}
-        run: |
-          mkdir -p ../build_qt_relwithdebinfo
-          cd ../build_qt_relwithdebinfo
-          rm -rf *
-          cmake \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_C_COMPILER_LAUNCHER=/usr/local/bin/ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=/usr/local/bin/ccache \
-            -DCMAKE_TOOLCHAIN_FILE=../ytsaurus/ydb/clang.toolchain \
-            -DCMAKE_C_FLAGS="-O2 -UNDEBUG -DMKQL_DISABLE_CODEGEN" \
-            -DCMAKE_CXX_FLAGS="-O2 -UNDEBUG -DMKQL_DISABLE_CODEGEN" \
-            -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O2 -UNDEBUG -DMKQL_DISABLE_CODEGEN" \
-            -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -UNDEBUG -DMKQL_DISABLE_CODEGEN" \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=On \
-            ../ytsaurus/ydb
-
-      - name: Build ytsaurus
-        if: ${{ inputs.build-ytsaurus }}
-        run: |
-          export CCACHE_BASEDIR="$(realpath ..)"
-          export CCACHE_REMOTE_ONLY=true
-          export CCACHE_REMOTE_STORAGE="${{ vars.CCACHE_REMOTE_STORAGE }}"
-
-          cd ../build
-          ninja
-
-          cd ../build_relwithdebinfo
-          ninja ytserver-all
-
-          #TODO
-          cd ../build_relwithdebinfo
-          ninja ytserver-clickhouse
-
-      - name: Build query tracker
-        if: ${{ inputs.build-query-tracker }}
-        run: |
-          export CCACHE_BASEDIR="$(realpath ..)"
-          export CCACHE_REMOTE_ONLY=true
-          export CCACHE_REMOTE_STORAGE="${{ vars.CCACHE_REMOTE_STORAGE }}"
-
-          cd ../build_qt
-          ninja libyqlplugin.so
-          ninja libdatetime2_udf.so
-          ninja libhyperloglog_udf.so
-          ninja libjson_udf.so
-          ninja libset_udf.so
-          ninja libtop_udf.so
-          ninja libyson2_udf.so
-          ninja libdigest_udf.so
-          ninja libhyperscan_udf.so
-          ninja libmath_udf.so
-          ninja libstat_udf.so
-          ninja libtopfreq_udf.so
-          ninja libdsv_udf.so
-          ninja libip_udf.so
-          ninja libpire_udf.so
-          ninja libunicode_udf.so
-          ninja libhistogram_udf.so
-          ninja libjson2_udf.so
-          ninja libre2_udf.so
-          ninja libstring_udf.so
-          ninja liburl_udf.so
-          ninja mrjob
-
-          cd ../build_qt_relwithdebinfo
-          ninja mrjob
-
-      - name: Build Python packages
-        if: ${{ inputs.build-python }}
-        run: |
-          source ../venv/bin/activate
-          YTSAURUS_COMMIT_HASH=${GITHUB_SHA} bash ./ytsaurus/yt/python/packages/build_ytsaurus_packages.sh --ytsaurus-source-path $(pwd)/ytsaurus --ytsaurus-build-path ../build
-
 

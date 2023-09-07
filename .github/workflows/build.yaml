@@ -10,6 +10,9 @@ on:
       build-ytsaurus:
         required: true
         type: boolean
+      build-chyt:
+        required: true
+        type: boolean
       build-query-tracker:
         required: true
         type: boolean
@@ -33,7 +36,7 @@ jobs:
           /opt/go/bin/go build
 
       - name: Configure ytsaurus
-        if: ${{ inputs.build-ytsaurus }}
+        if: ${{ inputs.build-ytsaurus || inputs.build-chyt || inputs.build-query-tracker }}
         run: |
           mkdir -p ../build
           cd ../build
@@ -47,7 +50,7 @@ jobs:
             ../ytsaurus/ytsaurus
 
       - name: Configure ytsaurus (relwithdebinfo)
-        if: ${{ inputs.build-ytsaurus }}
+        if: ${{ inputs.build-ytsaurus || inputs.build-chyt || inputs.build-query-tracker }}
         run: |
           mkdir -p ../build_relwithdebinfo
           cd ../build_relwithdebinfo
@@ -103,7 +106,7 @@ jobs:
             ../ytsaurus/ydb
 
       - name: Build ytsaurus
-        if: ${{ inputs.build-ytsaurus }}
+        if: ${{ inputs.build-ytsaurus || inputs.build-chyt || inputs.build-query-tracker }}
         run: |
           export CCACHE_BASEDIR="$(realpath ..)"
           export CCACHE_REMOTE_ONLY=true
@@ -115,7 +118,13 @@ jobs:
           cd ../build_relwithdebinfo
           ninja ytserver-all
 
-          #TODO
+      - name: Build chyt
+        if: ${{ inputs.build-chyt }}
+        run: |
+          export CCACHE_BASEDIR="$(realpath ..)"
+          export CCACHE_REMOTE_ONLY=true
+          export CCACHE_REMOTE_STORAGE="${{ vars.CCACHE_REMOTE_STORAGE }}"
+
           cd ../build_relwithdebinfo
           ninja ytserver-clickhouse
 
