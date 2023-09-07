@@ -54,19 +54,20 @@ jobs:
     needs:
       - start-vm
       - checkout
-    uses: ./.github/workflows/build.yaml
     with:
       run-on-value: ${{ needs.start-vm.outputs.label }}
       build-strawberry: true
       build-ytsaurus: true
       build-query-tracker: true
       build-python: true
+    uses: ./.github/workflows/build.yaml
 
   check:
     name: Run checks
     needs:
       - start-vm
       - checkout
+      - build
     runs-on: ${{ needs.start-vm.outputs.label }}
     steps:
       - name: DockerHub login
