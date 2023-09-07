@@ -4,6 +4,9 @@ on:
       runs-on-value:
         required: true
         type: string
+    secrets:
+      NEBIUS_TESTMO_TOKEN:
+        required: true
 
 jobs:
   check:
