@@ -63,21 +63,11 @@ jobs:
       build-python: true
     uses: ./.github/workflows/build.yaml
 
-  check:
-    name: Check
-    if: false
-    needs:
-      - start-vm
-      - build
-    with:
-      runs-on-value: ${{ needs.start-vm.outputs.label }}
-    uses: ./.github/workflows/check.yaml
-
   tag:
     name: Calculate docker tag
     needs:
       - start-vm
-      - check
+      - build
     runs-on: ${{ needs.start-vm.outputs.label }}
     outputs:
       image_tag: ${{ steps.tag.outputs.IMAGE_TAG }}
@@ -113,11 +103,22 @@ jobs:
       image-tag: ${{ needs.tag.outputs.image-tag }}
     uses: ./.github/workflows/docker.yaml
 
+  check:
+    name: Check
+    needs:
+      - start-vm
+      - docker
+    with:
+      runs-on-value: ${{ needs.start-vm.outputs.label }}
+    secrets:
+      NEBIUS_TESTMO_TOKEN: ${{ secrets.NEBIUS_TESTMO_TOKEN }}
+    uses: ./.github/workflows/check.yaml
+
   systest:
     name: systest
     needs:
       - start-vm
-      - docker
+      - check
     runs-on: ${{ needs.start-vm.outputs.label }}
     steps:
       - name: Mark latest nightly
