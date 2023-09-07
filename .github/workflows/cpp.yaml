@@ -60,7 +60,6 @@ jobs:
       build-ytsaurus: true
       build-query-tracker: true
       build-python: true
-    runs-on: ${{ needs.start-vm.outputs.label }}
     uses: ./.github/workflows/build.yaml
 
   check:
