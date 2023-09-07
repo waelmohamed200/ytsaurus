@@ -65,6 +65,7 @@ jobs:
       - build
     outputs:
       image-tag: ${{ steps.tag.outputs.IMAGE_TAG }}
+    runs-on: ${{ needs.start-vm.outputs.label }}
     steps:
       - name: Parse tag
         id: tag
