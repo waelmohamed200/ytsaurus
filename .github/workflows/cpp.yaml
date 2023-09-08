@@ -70,7 +70,7 @@ jobs:
       - build
     runs-on: ${{ needs.start-vm.outputs.label }}
     outputs:
-      image_tag: ${{ steps.tag.outputs.IMAGE_TAG }}
+      image-tag: ${{ steps.tag.outputs.IMAGE_TAG }}
     steps:
       - name: Calculate docker tag
         id: tag
