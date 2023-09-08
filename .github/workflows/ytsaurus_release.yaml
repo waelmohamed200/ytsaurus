@@ -3,7 +3,7 @@ name: Ytsaurus release
 on:
   push:
     tags:
-      - 'docker/ytsaurus/2[3-9].[1-9].[0-9]'
+      - 'docker/ytsaurus/[0-9]+\.[0-9]+\.[0-9]+'
 
 jobs:
   start-vm:
