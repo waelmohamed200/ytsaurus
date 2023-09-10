@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - stable/[0-9]+\.[0-9]+
+      - test/*
 
 jobs:
   start-vm:
@@ -110,7 +111,7 @@ jobs:
     name: Check
     needs:
       - start-vm
-      - docker
+      - tag
     with:
       runs-on-value: ${{ needs.start-vm.outputs.label }}
     secrets:
@@ -122,7 +123,7 @@ jobs:
     needs:
       - start-vm
       - tag
-      - check
+      - docker
     runs-on: ${{ needs.start-vm.outputs.label }}
     steps:
       - name: Mark latest nightly
@@ -151,6 +152,8 @@ jobs:
     needs:
       - start-vm
       - systest
+      - check
+      - docker
     runs-on: trampoline
     if: ${{ always() }}
     steps:
@@ -166,9 +169,10 @@ jobs:
   send-notifications:
     name: Send notifications
     needs:
+      - tag
       - stop-vm
     runs-on: trampoline
-    if: ${{ failure() }}
+    if: ${{ failure() && !contains(github.ref_name, 'test') }}
     steps:
       - name: Send telegram message
         uses: appleboy/telegram-action@master
