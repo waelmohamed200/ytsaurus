@@ -21,6 +21,7 @@ jobs:
           to: ytsaurus-github-issues@yandex-team.ru
           from: YTsaurus
           body: some body
+          ignore_cert: true
 
 
 
