@@ -18,7 +18,7 @@ jobs:
           username: ${{secrets.YTSAURUS_EMAIL}}
           password: ${{secrets.YTSAURUS_EMAIL_PASSWORD}}
           subject: Github Actions test2
-          to: ytsaurus-github-issues@yandex-team.ru,yak.nadya@gmail.com,nadya73@yandex-team.ru,nadya73@ytsaurus.tech
+          to: ytsaurus-github-issues@yandex-team.ru,nadyak13@yandex.ru,yak.nadya@gmail.com,nadya73@yandex-team.ru,nadya73@ytsaurus.tech
           from: YTsaurus
           body: some body
           secure: true
