@@ -21,7 +21,6 @@ jobs:
           to: ytsaurus-github-issues@yandex-team.ru,yak.nadya@gmail.com
           from: YTsaurus
           body: some body
-          html_body: file://temp.html
           secure: true
           convert_markdown: true
           priority: low
