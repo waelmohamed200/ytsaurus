@@ -23,7 +23,6 @@ jobs:
           body: some body
           html_body: file://temp.html
           secure: true
-          ignore_cert: true
           convert_markdown: true
           priority: low
 
