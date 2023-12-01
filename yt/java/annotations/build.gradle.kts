@@ -7,6 +7,8 @@ plugins {
 group = "tech.ytsaurus"
 version = project.properties["version"]
 
+import com.google.protobuf.gradle.protoc
+
 repositories {
     mavenCentral()
 }
