@@ -27,6 +27,13 @@ dependencies {
     testImplementation("org.apache.logging.log4j:log4j-slf4j-impl:2.13.1")
 }
 
+protobuf {
+    protoc {
+        // Download from repositories
+        artifact = 'com.google.protobuf:protoc:3.22.5'
+    }
+}
+
 tasks.test {
     testLogging {
         showStandardStreams = true

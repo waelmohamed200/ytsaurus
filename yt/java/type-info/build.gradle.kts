@@ -22,6 +22,13 @@ dependencies {
     testImplementation("junit:junit:4.13")
 }
 
+protobuf {
+    protoc {
+        // Download from repositories
+        artifact = 'com.google.protobuf:protoc:3.22.5'
+    }
+}
+
 tasks.test {
     testLogging {
         showStandardStreams = true
