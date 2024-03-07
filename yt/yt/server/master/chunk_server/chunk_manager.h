@@ -44,6 +44,8 @@ struct IChunkManager
         const NProto::TReqUpdateChunkRequisition& request) = 0;
     virtual std::unique_ptr<NHydra::TMutation> CreateConfirmChunkListsRequisitionTraverseFinishedMutation(
         const NProto::TReqConfirmChunkListsRequisitionTraverseFinished& request) = 0;
+    virtual std::unique_ptr<NHydra::TMutation> CreateRescheduleChunkListRequisitionTraversalsMutation(
+        const NProto::TReqRescheduleChunkListRequisitionTraversals& request) = 0;
     virtual std::unique_ptr<NHydra::TMutation> CreateRegisterChunkEndorsementsMutation(
         const NProto::TReqRegisterChunkEndorsements& request) = 0;
     virtual std::unique_ptr<NHydra::TMutation> CreateScheduleChunkRequisitionUpdatesMutation(
@@ -265,6 +267,7 @@ struct IChunkManager
     virtual const THashSet<TChunk*>& ForeignChunks() const = 0;
 
     virtual void ScheduleGlobalChunkRefresh() = 0;
+    virtual void RescheduleChunkListRequisitionTraversals() = 0;
 
     //! Computes quorum info for a given journal chunk
     //! by querying a quorum of replicas.
@@ -361,6 +364,11 @@ struct IChunkManager
 
     virtual std::vector<TNodeId> GetLastSeenReplicas(
         const NObjectServer::TEphemeralObjectPtr<TChunk>& chunk) const = 0;
+
+    virtual TErrorOr<TChunkLocationPtrWithReplicaInfoList> GetSequoiaChunkReplicas(
+        const NObjectServer::TEphemeralObjectPtr<TChunk>& chunk) const = 0;
+    virtual THashMap<TChunkId, TErrorOr<TChunkLocationPtrWithReplicaInfoList>> GetSequoiaChunkReplicas(
+        const std::vector<NObjectServer::TEphemeralObjectPtr<TChunk>>& chunks) const = 0;
 
 private:
     friend class TChunkTypeHandler;

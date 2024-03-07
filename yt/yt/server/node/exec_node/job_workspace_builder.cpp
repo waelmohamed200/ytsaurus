@@ -268,14 +268,7 @@ public:
             std::move(invoker),
             std::move(context),
             std::move(directoryManager))
-    {
-        YT_LOG_DEBUG("Creating simple job workspace builder");
-    }
-
-    ~TSimpleJobWorkspaceBuilder()
-    {
-        YT_LOG_DEBUG("Destroying simple job workspace builder");
-    }
+    { }
 
 private:
     TRootFS MakeWritableRootFS()
@@ -384,14 +377,7 @@ public:
             std::move(invoker),
             std::move(context),
             std::move(directoryManager))
-    {
-        YT_LOG_DEBUG("Creating Porto job workspace builder");
-    }
-
-    ~TPortoJobWorkspaceBuilder()
-    {
-        YT_LOG_DEBUG("Destroying Porto job workspace builder");
-    }
+    { }
 
 private:
     TFuture<void> DoPrepareSandboxDirectories() override
@@ -407,7 +393,7 @@ private:
         ResultHolder_.TmpfsPaths = WaitFor(slot->PrepareSandboxDirectories(Context_.UserSandboxOptions))
             .ValueOrThrow();
 
-        if (Context_.UserSandboxOptions.EnableArtifactBinds && !Context_.LayerArtifactKeys.empty()) {
+        if (!Context_.LayerArtifactKeys.empty()) {
             PrepareArtifactBinds();
         } else {
             MakeArtifactSymlinks();
@@ -627,11 +613,7 @@ private:
         ResultHolder_.TmpfsPaths = WaitFor(slot->PrepareSandboxDirectories(Context_.UserSandboxOptions))
             .ValueOrThrow();
 
-        if (Context_.UserSandboxOptions.EnableArtifactBinds) {
-            PrepareArtifactBinds();
-        } else {
-            MakeArtifactSymlinks();
-        }
+        PrepareArtifactBinds();
 
         YT_LOG_INFO("Finished preparing sandbox directories");
 

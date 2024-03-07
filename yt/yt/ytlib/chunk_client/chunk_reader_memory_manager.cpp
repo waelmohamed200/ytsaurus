@@ -138,16 +138,9 @@ TFuture<TMemoryUsageGuardPtr> TChunkReaderMemoryManager::AsyncAcquire(i64 size)
         size,
         GetFreeMemorySize());
 
-    auto memoryPromise = NewPromise<TMemoryUsageGuardPtr>();
-    auto memoryFuture = memoryPromise.ToFuture();
-    AsyncSemaphore_->AsyncAcquire(
-        BIND(
-            &TChunkReaderMemoryManager::OnSemaphoreAcquired,
-            MakeWeak(this),
-            Passed(std::move(memoryPromise))),
-        size);
-
-    return memoryFuture.ToImmediatelyCancelable();
+    return AsyncSemaphore_->AsyncAcquire(size)
+        .ApplyUnique(BIND(ThrowOnDestroyed(&TChunkReaderMemoryManager::OnSemaphoreAcquired), MakeWeak(this)))
+        .ToImmediatelyCancelable();
 }
 
 void TChunkReaderMemoryManager::TryUnregister()
@@ -224,16 +217,16 @@ TFuture<void> TChunkReaderMemoryManager::Finalize()
         .ToUncancelable();
 }
 
-void TChunkReaderMemoryManager::OnSemaphoreAcquired(TPromise<TMemoryUsageGuardPtr> promise, TAsyncSemaphoreGuard semaphoreGuard)
+TMemoryUsageGuardPtr TChunkReaderMemoryManager::OnSemaphoreAcquired(TAsyncSemaphoreGuard&& semaphoreGuard)
 {
     auto size = semaphoreGuard.GetSlots();
 
     YT_LOG_DEBUG_IF(Options_.EnableDetailedLogging, "Semaphore acquired (MemorySize: %v)", size);
 
-    promise.Set(New<TMemoryUsageGuard>(
+    return New<TMemoryUsageGuard>(
         std::move(semaphoreGuard),
         MakeWeak(this),
-        MemoryUsageTracker_ ? TMemoryUsageTrackerGuard::Acquire(MemoryUsageTracker_, size) : std::optional<TMemoryUsageTrackerGuard>()));
+        MemoryUsageTracker_ ? TMemoryUsageTrackerGuard::Acquire(MemoryUsageTracker_, size) : std::optional<TMemoryUsageTrackerGuard>());
 }
 
 void TChunkReaderMemoryManager::OnMemoryRequirementsUpdated()

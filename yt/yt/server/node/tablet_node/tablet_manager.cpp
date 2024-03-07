@@ -34,7 +34,7 @@
 #include <yt/yt/server/node/cluster_node/dynamic_config_manager.h>
 #include <yt/yt/server/node/cluster_node/master_connector.h>
 
-#include <yt/yt/server/node/cellar_node/dynamic_bundle_config_manager.h>
+#include <yt/yt/server/node/cellar_node/bundle_dynamic_config_manager.h>
 
 #include <yt/yt/server/node/tablet_node/transaction_manager.pb.h>
 
@@ -195,16 +195,16 @@ public:
             Bootstrap_))
         , RowDigestFetcher_(CreateRowDigestFetcher(
             slot->GetCellId(),
-            Bootstrap_->GetDynamicConfigManager()->GetConfig(),
-            Slot_->GetAutomatonInvoker()))
+            Slot_->GetAutomatonInvoker(),
+            Bootstrap_->GetDynamicConfigManager()->GetConfig()))
         , ChunkViewSizeFetcher_(CreateChunkViewSizeFetcher(
             slot->GetCellId(),
-            Bootstrap_->GetDynamicConfigManager()->GetConfig(),
             Bootstrap_->GetNodeDirectory(),
             Slot_->GetAutomatonInvoker(),
             Bootstrap_->GetStorageHeavyInvoker(),
             Bootstrap_->GetClient(),
-            Bootstrap_->GetConnection()->GetChunkReplicaCache()))
+            Bootstrap_->GetConnection()->GetChunkReplicaCache(),
+            Bootstrap_->GetDynamicConfigManager()->GetConfig()))
     {
         VERIFY_INVOKER_THREAD_AFFINITY(Slot_->GetAutomatonInvoker(), AutomatonThread);
 
@@ -528,19 +528,16 @@ public:
             tablet->GetLoggingTag(),
             transaction->GetId());
 
-        auto promise = NewPromise<void>();
-        auto future = promise.ToFuture();
-        tablet
+        return tablet
             ->GetStoresUpdateCommitSemaphore()
-            ->AsyncAcquire(
+            ->AsyncAcquire()
+            .ApplyUnique(
                 BIND(
-                    &TTabletManager::OnStoresUpdateCommitSemaphoreAcquired,
+                    ThrowOnDestroyed(&TTabletManager::OnStoresUpdateCommitSemaphoreAcquired),
                     MakeWeak(this),
                     tablet,
-                    transaction,
-                    Passed(std::move(promise)))
-                .Via(tablet->GetEpochAutomatonInvoker()));
-        return future;
+                    transaction)
+                .AsyncVia(tablet->GetEpochAutomatonInvoker()));
     }
 
     IYPathServicePtr GetOrchidService() override
@@ -986,9 +983,6 @@ private:
         for (auto [tabletId, tablet] : TabletMap_) {
             CheckIfTabletFullyUnlocked(tablet);
             CheckIfTabletFullyFlushed(tablet);
-
-            RowDigestFetcher_->FetchStoreInfos(tablet);
-            ChunkViewSizeFetcher_->FetchStoreInfos(tablet);
         }
 
         DecommissionCheckExecutor_->Start();
@@ -1040,6 +1034,17 @@ private:
 
         for (auto [tabletId, tablet] : TabletMap_) {
             StopTabletEpoch(tablet);
+        }
+    }
+
+    // COMPAT(ifsmirnov)
+    // Replace all callers with |request.set_mount_revision(...)| when removing the compat.
+    template <class TResponse>
+    void SetMountRevisionCompat(TResponse* response, TTablet* tablet)
+    {
+        const auto* context = GetCurrentMutationContext();
+        if (context->Request().Reign >= static_cast<int>(ETabletReign::SmoothTabletMovement)) {
+            response->set_mount_revision(tablet->GetMountRevision());
         }
     }
 
@@ -1157,11 +1162,6 @@ private:
             /*createDynamicStore*/ !freeze && !isSmoothMoveTarget,
             mountHint);
 
-        if (IsLeader()) {
-            RowDigestFetcher_->FetchStoreInfos(tablet);
-            ChunkViewSizeFetcher_->FetchStoreInfos(tablet);
-        }
-
         tablet->SetState(freeze ? ETabletState::Frozen : ETabletState::Mounted);
 
         // NB: We do not store previously attached dictionary chunk ids. We just build new ones upon mount.
@@ -1247,7 +1247,7 @@ private:
             TRspMountTablet response;
             ToProto(response.mutable_tablet_id(), tabletId);
             response.set_frozen(freeze);
-            response.set_mount_revision(tablet->GetMountRevision());
+            SetMountRevisionCompat(&response, tablet);
             PostMasterMessage(tablet, response, /*forceCellMailbox*/ true);
         }
 
@@ -1495,6 +1495,12 @@ private:
         std::vector<TError> configErrors;
         auto settings = rawSettings.BuildEffectiveSettings(&configErrors, nullptr);
 
+        bool rowDigestChanged = *settings.MountConfig->RowDigestCompaction !=
+            *tablet->GetSettings().MountConfig->RowDigestCompaction;
+
+        bool chunkViewSizeChanged = settings.MountConfig->MaxChunkViewSizeRatio !=
+            tablet->GetSettings().MountConfig->MaxChunkViewSizeRatio;
+
         const auto& storeManager = tablet->GetStoreManager();
         storeManager->Remount(settings);
 
@@ -1510,9 +1516,15 @@ private:
                 StopTableReplicaEpoch(&replicaInfo);
                 StartTableReplicaEpoch(tablet, &replicaInfo);
             }
+        }
 
-            RowDigestFetcher_->FetchStoreInfos(tablet);
+        if (chunkViewSizeChanged) {
+            ChunkViewSizeFetcher_->ResetCompactionHints(tablet);
             ChunkViewSizeFetcher_->FetchStoreInfos(tablet);
+        }
+        if (rowDigestChanged) {
+            RowDigestFetcher_->ResetCompactionHints(tablet);
+            RowDigestFetcher_->FetchStoreInfos(tablet);
         }
     }
 
@@ -1656,7 +1668,7 @@ private:
 
         TRspUnfreezeTablet response;
         ToProto(response.mutable_tablet_id(), tabletId);
-        response.set_mount_revision(tablet->GetMountRevision());
+        SetMountRevisionCompat(&response, tablet);
         PostMasterMessage(tablet, response);
     }
 
@@ -1759,11 +1771,6 @@ private:
 
         storeManager->BulkAddStores(MakeRange(storesToAdd), /*onMount*/ false);
 
-        if (IsLeader()) {
-            RowDigestFetcher_->FetchStoreInfos(tablet, storesToAdd);
-            ChunkViewSizeFetcher_->FetchStoreInfos(tablet, storesToAdd);
-        }
-
         const auto& lockManager = tablet->GetLockManager();
 
         // COMPAT(ifsmirnov)
@@ -1785,6 +1792,8 @@ private:
         } else {
             UpdateTabletSnapshot(tablet);
         }
+
+        FetchCompactionHints(tablet, storesToAdd);
 
         YT_LOG_INFO(
             "Tablet unlocked by bulk insert (%v, TransactionId: %v, AddedStoreIds: %v, LockManagerEpoch: %v)",
@@ -1858,7 +1867,7 @@ private:
                 if (auto replicationProgress = tablet->RuntimeData()->ReplicationProgress.Acquire()) {
                     ToProto(response.mutable_replication_progress(), *replicationProgress);
                 }
-                response.set_mount_revision(tablet->GetMountRevision());
+                SetMountRevisionCompat(&response, tablet);
 
                 if (auto masterEndpointId = tablet->GetMasterAvenueEndpointId()) {
                     Slot_->UnregisterMasterAvenue(masterEndpointId);
@@ -1898,7 +1907,7 @@ private:
                 TRspFreezeTablet response;
                 ToProto(response.mutable_tablet_id(), tabletId);
                 *response.mutable_mount_hint() = tablet->GetMountHint();
-                response.set_mount_revision(tablet->GetMountRevision());
+                SetMountRevisionCompat(&response, tablet);
                 PostMasterMessage(tablet, response);
                 break;
             }
@@ -2146,9 +2155,12 @@ private:
             }
         }
 
-        if (tablet->GetStoresUpdatePreparedTransactionId()) {
-            THROW_ERROR_EXCEPTION("Cannot prepare stores update since it is already prepared by transaction %v",
-                tablet->GetStoresUpdatePreparedTransactionId());
+        // COMPAT(ifsmirnov)
+        if (GetCurrentMutationContext()->Request().Reign >= static_cast<int>(ETabletReign::SmoothTabletMovement)) {
+            if (tablet->GetStoresUpdatePreparedTransactionId()) {
+                THROW_ERROR_EXCEPTION("Cannot prepare stores update since it is already prepared by transaction %v",
+                    tablet->GetStoresUpdatePreparedTransactionId());
+            }
         }
 
         // Prepare.
@@ -2214,7 +2226,10 @@ private:
             }
         }
 
-        tablet->SetStoresUpdatePreparedTransactionId(transaction->GetId());
+        // COMPAT(ifsmirnov)
+        if (GetCurrentMutationContext()->Request().Reign >= static_cast<int>(ETabletReign::SmoothTabletMovement)) {
+            tablet->SetStoresUpdatePreparedTransactionId(transaction->GetId());
+        }
 
         // TODO(ifsmirnov): log preparation errors as well.
         structuredLogger->OnTabletStoresUpdatePrepared(
@@ -2362,7 +2377,6 @@ private:
                 transaction->GetId(),
                 tabletId,
                 reason);
-            return;
         }
 
         auto* tablet = FindTablet(tabletId);
@@ -2378,17 +2392,24 @@ private:
             return;
         }
 
-        auto expectedTransactionId = tablet->GetStoresUpdatePreparedTransactionId();
-        if (expectedTransactionId != transaction->GetId()) {
-            YT_LOG_DEBUG("Unexpected stores update transaction aborted, ignored "
-                "(%v, TransactionId: %v, PreparedTransactionId: %v)",
-                tablet->GetLoggingTag(),
-                transaction->GetId(),
-                expectedTransactionId);
-            return;
-        }
+        // COMPAT(ifsmirnov)
+        if (GetCurrentMutationContext()->Request().Reign >= static_cast<int>(ETabletReign::SmoothTabletMovement)) {
+            auto expectedTransactionId = tablet->GetStoresUpdatePreparedTransactionId();
 
-        tablet->SetStoresUpdatePreparedTransactionId({});
+            if (expectedTransactionId == transaction->GetId()) {
+                tablet->SetStoresUpdatePreparedTransactionId({});
+            } else {
+                // This is fine because out-of-order aborts may come for transactions
+                // that were not even prepared.
+                YT_LOG_DEBUG("Unexpected stores update transaction aborted, ignored "
+                    "(%v, TransactionId: %v, PreparedTransactionId: %v)",
+                    tablet->GetLoggingTag(),
+                    transaction->GetId(),
+                    expectedTransactionId);
+
+                // Continue nevertheless to mimic old behaviour.
+            }
+        }
 
         THashSet<TChunkId> hunkChunkIdsToAdd;
         for (const auto& descriptor : request->hunk_chunks_to_add()) {
@@ -2505,14 +2526,18 @@ private:
             return;
         }
 
-        auto expectedTransactionId = tablet->GetStoresUpdatePreparedTransactionId();
-        if (expectedTransactionId != transaction->GetId()) {
-            YT_LOG_ALERT("Unexpected stores update transaction committed "
-                "(%v, TransactionId: %v, PreparedTransactionId: %v)",
-                tablet->GetLoggingTag(),
-                transaction->GetId(),
-                expectedTransactionId);
-            // Continue nevertheless to mimic old behaviour.
+        // COMPAT(ifsmirnov)
+        if (GetCurrentMutationContext()->Request().Reign >= static_cast<int>(ETabletReign::SmoothTabletMovement)) {
+            auto expectedTransactionId = tablet->GetStoresUpdatePreparedTransactionId();
+            if (expectedTransactionId != transaction->GetId()) {
+                YT_LOG_ALERT("Unexpected stores update transaction committed "
+                    "(%v, TransactionId: %v, PreparedTransactionId: %v)",
+                    tablet->GetLoggingTag(),
+                    transaction->GetId(),
+                    expectedTransactionId);
+
+                // Continue nevertheless to mimic old behaviour.
+            }
         }
 
         tablet->SetStoresUpdatePreparedTransactionId({});
@@ -2609,7 +2634,8 @@ private:
 
             if (auto miscExt = FindProtoExtension<TMiscExt>(descriptor.chunk_meta().extensions())) {
                 if (miscExt->has_dictionary_compression_policy()) {
-                    auto policy = CheckedEnumCast<EDictionaryCompressionPolicy>(miscExt->dictionary_compression_policy());
+                    auto policy = CheckedEnumCast<EDictionaryCompressionPolicy>(
+                        miscExt->dictionary_compression_policy());
                     tablet->AttachCompressionDictionary(policy, chunkId);
                     compressionDictionaryIds.push_back(chunkId);
                 }
@@ -2713,12 +2739,6 @@ private:
             }
         }
 
-        if (IsLeader()) {
-            std::optional<TRange<IStorePtr>> storesRange({addedStores.begin(), addedStores.end()});
-            RowDigestFetcher_->FetchStoreInfos(tablet, storesRange);
-            ChunkViewSizeFetcher_->FetchStoreInfos(tablet, storesRange);
-        }
-
         auto retainedTimestamp = std::max(
             tablet->GetRetainedTimestamp(),
             static_cast<TTimestamp>(request->retained_timestamp()));
@@ -2773,6 +2793,8 @@ private:
 
         CheckIfTabletFullyFlushed(tablet);
         Slot_->GetSmoothMovementTracker()->CheckTablet(tablet);
+
+        FetchCompactionHints(tablet, {{addedStores.begin(), addedStores.end()}});
     }
 
     void HydraSplitPartition(TReqSplitPartition* request)
@@ -4035,6 +4057,8 @@ private:
 
         tablet->SmoothMovementData().SetStageChangeScheduled(false);
 
+        FetchCompactionHints(tablet);
+
         YT_VERIFY(tablet->GetTransientTabletLockCount() == 0);
     }
 
@@ -4072,21 +4096,7 @@ private:
 
     void StopTabletEpoch(TTablet* tablet)
     {
-        for (const auto& [storeId, store] : tablet->StoreIdMap()) {
-            if (store->GetType() == EStoreType::SortedChunk) {
-                auto& compactionHints = store->AsSortedChunk()->CompactionHints();
-
-                if (compactionHints.RowDigest.IsCertainRequestStatus(ECompactionHintRequestStatus::Requested)) {
-                    compactionHints.RowDigest.SetRequestStatus(ECompactionHintRequestStatus::None);
-                }
-
-                if (TypeFromId(store->GetId()) == EObjectType::ChunkView) {
-                    if (compactionHints.ChunkViewSize.IsCertainRequestStatus(ECompactionHintRequestStatus::Requested)) {
-                        compactionHints.ChunkViewSize.SetRequestStatus(ECompactionHintRequestStatus::None);
-                    }
-                }
-            }
-        }
+        ResetCompactionHints(tablet);
 
         if (const auto& storeManager = tablet->GetStoreManager()) {
             // Store Manager could be null if snapshot loading is aborted.
@@ -4944,11 +4954,10 @@ private:
     }
 
 
-    void OnStoresUpdateCommitSemaphoreAcquired(
+    TFuture<void> OnStoresUpdateCommitSemaphoreAcquired(
         TTablet* tablet,
         const ITransactionPtr& transaction,
-        TPromise<void> promise,
-        TAsyncSemaphoreGuard /*guard*/)
+        TAsyncSemaphoreGuard&&)
     {
         try {
             YT_LOG_DEBUG("Started committing tablet stores update transaction (%v, TransactionId: %v)",
@@ -4991,9 +5000,9 @@ private:
                 tablet->GetLoggingTag(),
                 transaction->GetId());
 
-            promise.Set();
+            return VoidFuture;
         } catch (const std::exception& ex) {
-            promise.Set(TError(ex));
+            return MakeFuture(TError(ex));
         }
     }
 
@@ -5033,7 +5042,7 @@ private:
         return dynamicConfigManager->GetConfig()->TabletNode;
     }
 
-   const TClusterNodeDynamicConfigManagerPtr& GetDynamicConfigManager() const override
+    const TClusterNodeDynamicConfigManagerPtr& GetDynamicConfigManager() const override
     {
         return Bootstrap_->GetDynamicConfigManager();
     }
@@ -5088,14 +5097,23 @@ private:
     {
         VERIFY_THREAD_AFFINITY(AutomatonThread);
 
-        RowDigestFetcher_->Reconfigure(oldConfig, newConfig);
-        ChunkViewSizeFetcher_->Reconfigure(oldConfig, newConfig);
-        if (IsLeader() &&
+        RowDigestFetcher_->Reconfigure(newConfig);
+        ChunkViewSizeFetcher_->Reconfigure(newConfig);
+
+        if (!IsRecovery() &&
+            IsLeader() &&
             newConfig->TabletNode->StoreCompactor->UseRowDigests &&
             !oldConfig->TabletNode->StoreCompactor->UseRowDigests)
         {
             for (auto& [tabletId, tablet] : Tablets()) {
                 RowDigestFetcher_->FetchStoreInfos(tablet);
+            }
+        }
+        if (!newConfig->TabletNode->StoreCompactor->UseRowDigests &&
+            oldConfig->TabletNode->StoreCompactor->UseRowDigests)
+        {
+            for (auto& [tabletId, tablet] : Tablets()) {
+                RowDigestFetcher_->ResetCompactionHints(tablet);
             }
         }
     }
@@ -5333,6 +5351,20 @@ private:
                 << TErrorAttribute("trimmed_row_count", trimmedRowCount)
                 << TErrorAttribute("replication_timestamp", replicationTimestamp);
         }
+    }
+
+    void FetchCompactionHints(TTablet* tablet, const std::optional<TRange<IStorePtr>>& stores = {})
+    {
+        if (IsLeader()) {
+            ChunkViewSizeFetcher_->FetchStoreInfos(tablet, stores);
+            RowDigestFetcher_->FetchStoreInfos(tablet, stores);
+        }
+    }
+
+    void ResetCompactionHints(TTablet* tablet)
+    {
+        ChunkViewSizeFetcher_->ResetCompactionHints(tablet);
+        RowDigestFetcher_->ResetCompactionHints(tablet);
     }
 };
 

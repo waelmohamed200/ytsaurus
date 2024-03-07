@@ -254,10 +254,6 @@ DEFINE_ENUM(EHunkStoreState,
     ((Passive)                (3)) // rotated and cannot receive data
 );
 
-DEFINE_ENUM(ETabletRowMergerType,
-    (Legacy)
-);
-
 ////////////////////////////////////////////////////////////////////////////////
 
 DECLARE_REFCOUNTED_CLASS(TTabletHydraManagerConfig)
@@ -310,6 +306,7 @@ DECLARE_REFCOUNTED_CLASS(TOverloadTrackerConfig)
 DECLARE_REFCOUNTED_CLASS(TOverloadControllerConfig)
 DECLARE_REFCOUNTED_CLASS(TStatisticsReporterConfig)
 DECLARE_REFCOUNTED_CLASS(TMediumThrottlersConfig)
+DECLARE_REFCOUNTED_CLASS(TErrorManagerConfig)
 
 using TTabletStoreWriterConfig = NTableClient::TTableWriterConfig;
 using TTabletStoreWriterConfigPtr = NTableClient::TTableWriterConfigPtr;

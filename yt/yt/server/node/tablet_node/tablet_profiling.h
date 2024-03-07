@@ -41,7 +41,8 @@ struct TLookupCounters
     TLookupCounters() = default;
 
     TLookupCounters(
-        const NProfiling::TProfiler& profiler,
+        const NProfiling::TProfiler& tabletProfiler,
+        const NProfiling::TProfiler& mediumProfiler,
         const NTableClient::TTableSchemaPtr& schema);
 
     NProfiling::TCounter CacheHits;
@@ -88,7 +89,8 @@ struct TSelectRowsCounters
     TSelectRowsCounters() = default;
 
     TSelectRowsCounters(
-        const NProfiling::TProfiler& profiler,
+        const NProfiling::TProfiler& tabletProfiler,
+        const NProfiling::TProfiler& mediumProfiler,
         const NTableClient::TTableSchemaPtr& schema);
 
     NProfiling::TCounter RowCount;
@@ -143,6 +145,8 @@ struct TWriteCounters
 
     NProfiling::TCounter RowCount;
     NProfiling::TCounter DataWeight;
+    NProfiling::TCounter BulkInsertRowCount;
+    NProfiling::TCounter BulkInsertDataWeight;
     NProfiling::TEventTimer ValidateResourceWallTime;
 };
 
@@ -421,8 +425,9 @@ public:
     TTableProfiler() = default;
 
     TTableProfiler(
-        const NProfiling::TProfiler& profiler,
+        const NProfiling::TProfiler& tableProfiler,
         const NProfiling::TProfiler& diskProfiler,
+        const NProfiling::TProfiler& mediumProfiler,
         NTableClient::TTableSchemaPtr schema);
 
     static TTableProfilerPtr GetDisabled();
@@ -453,6 +458,7 @@ public:
 private:
     const bool Disabled_ = true;
     const NProfiling::TProfiler Profiler_ = {};
+    const NProfiling::TProfiler MediumProfiler_ = {};
     const NTableClient::TTableSchemaPtr Schema_;
 
     template <class TCounter>
@@ -467,7 +473,8 @@ private:
         TCounter* Get(
             bool disabled,
             const std::optional<TString>& userTag,
-            const NProfiling::TProfiler& profiler,
+            const NProfiling::TProfiler& tableProfiler,
+            const NProfiling::TProfiler& mediumProfiler,
             const NTableClient::TTableSchemaPtr& schema);
     };
 
@@ -554,6 +561,23 @@ private:
 };
 
 DEFINE_REFCOUNTED_TYPE(TReaderProfiler)
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TBulkInsertProfiler
+{
+public:
+    explicit TBulkInsertProfiler(TTablet* tablet);
+
+    ~TBulkInsertProfiler();
+
+    void Update(const IStorePtr& store);
+
+private:
+    const TWriteCounters* const Counters_;
+    i64 RowCount_ = 0;
+    i64 DataWeight_ = 0;
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 

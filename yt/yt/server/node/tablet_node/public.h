@@ -32,6 +32,7 @@ DEFINE_ENUM(ETabletDistributedThrottlerKind,
 
     // Disk IO.
     (ChangelogMediumWrite)
+    (BlobMediumWrite)
 );
 
 DEFINE_ENUM(EHunkCompactionReason,
@@ -71,13 +72,6 @@ DEFINE_ENUM(ETabletLockType,
     // Note that transaction may hold both transient and persistent
     // locks on tablet.
     ((PersistentTransaction)         (2))
-);
-
-
-DEFINE_ENUM(ECompactionHintRequestStatus,
-    ((None)         (0))
-    ((InQueue)      (1))
-    ((Requested)    (2))
 );
 
 DEFINE_ENUM(EChunkViewSizeStatus,
@@ -214,6 +208,9 @@ DECLARE_REFCOUNTED_CLASS(TOverloadController)
 DECLARE_REFCOUNTED_CLASS(TMeanWaitTimeTracker)
 DECLARE_REFCOUNTED_CLASS(TCongestionController)
 DECLARE_REFCOUNTED_CLASS(TCompactionHintFetcher)
+
+DECLARE_REFCOUNTED_CLASS(TErrorManager)
+DECLARE_REFCOUNTED_CLASS(TMediumThrottlerManager);
 
 struct TSortedDynamicRowHeader;
 class TSortedDynamicRow;

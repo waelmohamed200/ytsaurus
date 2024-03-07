@@ -27,13 +27,30 @@ using TBlockIOStatistics = TBlockIO::TStatistics;
 using TMemoryStatistics = TMemory::TStatistics;
 using TNetworkStatistics = TNetwork::TStatistics;
 
+////////////////////////////////////////////////////////////////////////////////
+
+struct TVolumeStatistics
+{
+    THashMap<TString, i64> VolumeCounts;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TLayerStatistics
+{
+    TErrorOr<i64> LayerCounts;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TTotalStatistics
 {
-public:
     TCpuStatistics CpuStatistics;
     TMemoryStatistics MemoryStatistics;
     TBlockIOStatistics BlockIOStatistics;
     TNetworkStatistics NetworkStatistics;
+    TVolumeStatistics VolumeStatistics;
+    TLayerStatistics LayerStatistics;
 };
 
 #ifdef _linux_
@@ -81,7 +98,7 @@ private:
     mutable std::optional<TBlockIOStatistics> CachedBlockIOStatistics_;
     mutable std::optional<TNetworkStatistics> CachedNetworkStatistics_;
     mutable std::optional<TTotalStatistics> CachedTotalStatistics_;
-    mutable TErrorOr<ui64> PeakThreadCount_ = 0;
+    mutable TErrorOr<i64> PeakThreadCount_ = 0;
 
     template <class T, class F>
     T GetStatistics(
@@ -93,11 +110,13 @@ private:
     TMemoryStatistics ExtractMemoryStatistics(const TResourceUsage& resourceUsage) const;
     TBlockIOStatistics ExtractBlockIOStatistics(const TResourceUsage& resourceUsage) const;
     TNetworkStatistics ExtractNetworkStatistics(const TResourceUsage& resourceUsage) const;
+    TVolumeStatistics ExtractVolumeStatistics(const TResourceUsage& resourceUsage) const;
+    TLayerStatistics ExtractLayerStatistics(const TResourceUsage& resourceUsage) const;
     TTotalStatistics ExtractTotalStatistics(const TResourceUsage& resourceUsage) const;
 
-    TErrorOr<ui64> CalculateCounterDelta(
-        const TErrorOr<ui64>& oldValue,
-        const TErrorOr<ui64>& newValue) const;
+    TErrorOr<i64> CalculateCounterDelta(
+        const TErrorOr<i64>& oldValue,
+        const TErrorOr<i64>& newValue) const;
 
     void ReCalculateResourceUsage(const TResourceUsage& newResourceUsage) const;
 
@@ -141,6 +160,16 @@ private:
         i64 timeDeltaUsec);
 
     void WriteNetworkMetrics(
+        ISensorWriter* writer,
+        TTotalStatistics& totalStatistics,
+        i64 timeDeltaUsec);
+
+    void WriteVolumeMetrics(
+        ISensorWriter* writer,
+        TTotalStatistics& totalStatistics,
+        i64 timeDeltaUsec);
+
+    void WriteLayerMetrics(
         ISensorWriter* writer,
         TTotalStatistics& totalStatistics,
         i64 timeDeltaUsec);

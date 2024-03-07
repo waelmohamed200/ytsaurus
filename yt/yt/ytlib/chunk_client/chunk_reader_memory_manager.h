@@ -126,7 +126,7 @@ private:
 
     DECLARE_NEW_FRIEND()
 
-    void OnSemaphoreAcquired(TPromise<TMemoryUsageGuardPtr> promise, NConcurrency::TAsyncSemaphoreGuard semaphoreGuard);
+    TMemoryUsageGuardPtr OnSemaphoreAcquired(NConcurrency::TAsyncSemaphoreGuard&& semaphoreGuard);
 
     void OnMemoryRequirementsUpdated();
 

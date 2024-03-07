@@ -183,8 +183,8 @@ public:
             .SetCancelable(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(CancelChunk));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(PutBlocks)
-            .SetQueueSizeLimit(5'000)
-            .SetConcurrencyLimit(5'000)
+            .SetQueueSizeLimit(100)
+            .SetConcurrencyLimit(100)
             .SetCancelable(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(SendBlocks)
             .SetQueueSizeLimit(5'000)
@@ -207,13 +207,13 @@ public:
             .SetConcurrencyLimit(5'000));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(GetBlockSet)
             .SetCancelable(true)
-            .SetQueueSizeLimit(5'000)
-            .SetConcurrencyLimit(5'000)
+            .SetQueueSizeLimit(1'000)
+            .SetConcurrencyLimit(1'000)
             .SetRequestQueueProvider(GetBlockSetQueue_));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(GetBlockRange)
             .SetCancelable(true)
-            .SetQueueSizeLimit(5'000)
-            .SetConcurrencyLimit(5'000)
+            .SetQueueSizeLimit(1'000)
+            .SetConcurrencyLimit(1'000)
             .SetRequestQueueProvider(GetBlockRangeQueue_));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(GetChunkFragmentSet)
             .SetInvoker(Bootstrap_->GetStorageLookupInvoker())
@@ -434,7 +434,7 @@ private:
         // NB: block checksums are validated before writing to disk.
         auto result = session->PutBlocks(
             firstBlockIndex,
-            GetRpcAttachedBlocks(request, /* validateChecksums */ false),
+            GetRpcAttachedBlocks(request, /*validateChecksums*/ false),
             populateCache);
 
         // Flush blocks if needed.
@@ -561,7 +561,7 @@ private:
 
         const auto& blockCache = Bootstrap_->GetP2PBlockCache();
 
-        auto blocks = GetRpcAttachedBlocks(request, true /* validateChecksums */);
+        auto blocks = GetRpcAttachedBlocks(request, true /*validateChecksums*/);
         if (std::ssize(blocks) != request->block_indexes_size()) {
             THROW_ERROR_EXCEPTION("Number of attached blocks is different from blocks field length")
                 << TErrorAttribute("attached_block_count", blocks.size())
@@ -1993,7 +1993,7 @@ private:
             }
 
             auto columnIds = FromProto<std::vector<int>>(subrequest.column_ids());
-            std::vector<TStableName> columnStableNames;
+            std::vector<TColumnStableName> columnStableNames;
             columnStableNames.reserve(columnIds.size());
             for (auto id : columnIds) {
                 columnStableNames.emplace_back(TString(nameTable->GetNameOrThrow(id)));
@@ -2126,7 +2126,7 @@ private:
     }
 
     TRefCountedColumnarStatisticsSubresponsePtr ExtractColumnarStatisticsFromChunkMeta(
-        const std::vector<TStableName>& columnStableNames,
+        const std::vector<TColumnStableName>& columnStableNames,
         TChunkId chunkId,
         const TErrorOr<TRefCountedChunkMetaPtr>& metaOrError)
     {
@@ -2173,7 +2173,7 @@ private:
 
             subresponse->mutable_column_data_weights()->Reserve(columnStableNames.size());
             for (const auto& columnName : columnStableNames) {
-                auto id = nameTable->FindId(columnName.Get());
+                auto id = nameTable->FindId(columnName.Underlying());
                 if (id && *id < columnarStatisticsExt.column_data_weights().size()) {
                     subresponse->add_column_data_weights(columnarStatisticsExt.column_data_weights(*id));
                 } else {

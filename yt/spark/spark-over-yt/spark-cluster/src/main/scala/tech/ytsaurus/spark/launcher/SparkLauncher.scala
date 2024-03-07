@@ -50,7 +50,7 @@ trait SparkLauncher {
   }
 
   def prepareLivyLog4jConfig(): Unit = {
-    val src = Path.of(livyHome, "conf", "log4j.properties.template")
+    val src = Path.of(spytHome, "conf", "log4j.livy.properties")
     val dst = Path.of(livyHome, "conf", "log4j.properties")
     Files.copy(src, dst)
   }
@@ -104,7 +104,7 @@ trait SparkLauncher {
 
   private def copyToSparkConfIfExists(filename: String): Unit = {
     val src = Path.of(home, filename)
-    val dst = Path.of(sparkHome, "conf", filename)
+    val dst = Path.of(spytHome, "conf", filename)
     if (Files.exists(src)) {
       Files.deleteIfExists(dst)
       Files.copy(src, dst)
@@ -170,6 +170,7 @@ trait SparkLauncher {
   }
 
   private def runLivyProcess(log: Logger): Process = {
+    val livyJavaOpts = s"cat $spytHome/conf/java-opts".!!
     val livyRunner = f"$livyHome/bin/livy-server start"
     log.info(s"Run command: $livyRunner")
     val startProcess = Process(
@@ -179,7 +180,10 @@ trait SparkLauncher {
       "SPARK_CONF_DIR" -> s"$spytHome/conf",
       "LIVY_PID_DIR" -> livyHome,
       "JAVA_HOME" -> javaHome,
-      "PYSPARK_PYTHON" -> "python3"
+      "PYSPARK_PYTHON" -> "python3",
+      "LIVY_SERVER_JAVA_OPTS" -> livyJavaOpts,
+      "CLASSPATH" -> s"$sparkHome/jars/*",
+      "PYTHONPATH" -> s"$spytHome/python"
     ).run(ProcessLogger(log.info(_)))
     val startProcessCode = startProcess.exitValue()
     log.info(f"Server started. Code: $startProcessCode")
@@ -285,6 +289,7 @@ trait SparkLauncher {
       "JAVA_HOME" -> javaHome,
       "SPARK_HOME" -> sparkHome,
       "SPARK_CONF_DIR" -> s"$spytHome/conf",
+      "PYTHONPATH" -> s"$spytHome/python",
       "SPARK_LOCAL_DIRS" -> sparkLocalDirs,
       // when using MTN, Spark should use ip address and not hostname, because hostname is not in DNS
       "SPARK_LOCAL_HOSTNAME" -> ytHostnameOrIpAddress,

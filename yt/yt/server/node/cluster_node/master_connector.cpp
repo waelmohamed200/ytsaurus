@@ -23,7 +23,10 @@
 #include <yt/yt/server/lib/tablet_node/config.h>
 
 #include <yt/yt/ytlib/api/native/client.h>
+#include <yt/yt/ytlib/api/native/config.h>
 #include <yt/yt/ytlib/api/native/connection.h>
+
+#include <yt/yt/ytlib/cell_master_client/cell_directory.h>
 
 #include <yt/yt/ytlib/chunk_client/medium_directory_synchronizer.h>
 
@@ -49,6 +52,7 @@
 namespace NYT::NClusterNode {
 
 using namespace NApi;
+using namespace NCellMasterClient;
 using namespace NChunkClient;
 using namespace NConcurrency;
 using namespace NDataNode;
@@ -104,10 +108,12 @@ public:
         VERIFY_THREAD_AFFINITY(ControlThread);
 
         const auto& connection = Bootstrap_->GetClient()->GetNativeConnection();
-        MasterCellTags_.push_back(connection->GetPrimaryMasterCellTag());
-        for (auto cellTag : connection->GetSecondaryMasterCellTags()) {
-            MasterCellTags_.push_back(cellTag);
-        }
+        const auto secondaryMasterCellTags = connection->GetSecondaryMasterCellTags();
+        MasterCellTags_.insert(connection->GetPrimaryMasterCellTag());
+        MasterCellTags_.insert(secondaryMasterCellTags.begin(), secondaryMasterCellTags.end());
+        connection->GetMasterCellDirectory()->SubscribeCellDirectoryChanged(
+            BIND(&TMasterConnector::OnMasterCellDirectoryChanged, MakeStrong(this))
+                .Via(Bootstrap_->GetControlInvoker()));
 
         const auto& dynamicConfigManager = Bootstrap_->GetDynamicConfigManager();
         dynamicConfigManager->SubscribeConfigChanged(BIND(&TMasterConnector::OnDynamicConfigChanged, MakeWeak(this)));
@@ -119,7 +125,7 @@ public:
     {
         VERIFY_THREAD_AFFINITY(ControlThread);
 
-        ResetAndRegisterAtMaster(/* firstTime */ true);
+        ResetAndRegisterAtMaster(/*firstTime*/ true);
     }
 
     TReqHeartbeat GetHeartbeatRequest()
@@ -176,6 +182,21 @@ public:
         .ThrowOnError();
 
         return heartbeat;
+    }
+
+    void OnMasterCellDirectoryChanged(
+        const THashSet<TCellTag>& addedSecondaryCellTags,
+        const TSecondaryMasterConnectionConfigs& /*reconfiguredSecondaryMasterConfigs*/,
+        const THashSet<TCellTag>& removedSecondaryTags)
+    {
+        VERIFY_THREAD_AFFINITY(ControlThread);
+
+        YT_LOG_DEBUG_UNLESS(
+            addedSecondaryCellTags.empty() && removedSecondaryTags.empty(),
+            "Unexpected master cell configuration detected "
+            "(AddedCellTags: %v, RemovedCellTags: %v)",
+            addedSecondaryCellTags,
+            removedSecondaryTags);
     }
 
     void OnHeartbeatResponse(const TRspHeartbeat& response)
@@ -273,7 +294,7 @@ public:
         return Epoch_.load();
     }
 
-    const NObjectClient::TCellTagList& GetMasterCellTags() const override
+    const THashSet<TCellTag>& GetMasterCellTags() const override
     {
         VERIFY_THREAD_AFFINITY_ANY();
 
@@ -308,7 +329,7 @@ private:
     TDuration HeartbeatPeriod_;
     TDuration HeartbeatPeriodSplay_;
 
-    TCellTagList MasterCellTags_;
+    THashSet<TCellTag> MasterCellTags_;
 
     std::vector<TError> GetAlerts()
     {
@@ -408,7 +429,7 @@ private:
 
         YT_LOG_WARNING(error, "Master transaction lease aborted");
 
-        ResetAndRegisterAtMaster(/* firstTime */ false);
+        ResetAndRegisterAtMaster(/*firstTime*/ false);
     }
 
     void Reset()
@@ -442,7 +463,7 @@ private:
             }
         } catch (const std::exception& ex) {
             YT_LOG_WARNING(ex, "Error registering at primary master");
-            ResetAndRegisterAtMaster(/* firstTime */ false);
+            ResetAndRegisterAtMaster(/*firstTime*/ false);
             return;
         }
 
@@ -559,6 +580,12 @@ private:
         auto rsp = WaitFor(req->Invoke())
             .ValueOrThrow();
 
+        // COMPAT(pogorelov): Remove when all masters will be 24.1.
+        if (rsp->tags_size() > 0) {
+            auto tags = FromProto<std::vector<TString>>(rsp->tags());
+            UpdateTags(std::move(tags));
+        }
+
         Bootstrap_->CompleteNodeRegistration();
 
         if (Bootstrap_->NeedDataNodeBootstrap()) {
@@ -582,11 +609,6 @@ private:
         }
 
         NodeId_.store(FromProto<TNodeId>(rsp->node_id()));
-
-        if (rsp->tags_size() > 0) {
-            auto tags = FromProto<std::vector<TString>>(rsp->tags());
-            UpdateTags(std::move(tags));
-        }
     }
 
     void SyncDirectories()
@@ -604,6 +626,7 @@ private:
         WaitFor(connection->GetClusterDirectorySynchronizer()->Sync())
             .ThrowOnError();
         YT_LOG_INFO("Cluster directory synchronized");
+        // TODO(cherepashka): add synchronization of master cell directory in future.
     }
 
     void StartHeartbeats()
@@ -611,7 +634,7 @@ private:
         VERIFY_THREAD_AFFINITY(ControlThread);
 
         YT_LOG_INFO("Start reporting cluster node heartbeats to master");
-        ScheduleHeartbeat(/* immediately */ true);
+        ScheduleHeartbeat(/*immediately*/ true);
     }
 
     void ScheduleHeartbeat(bool immediately)
@@ -650,13 +673,13 @@ private:
             YT_LOG_INFO("Successfully reported cluster node heartbeat to master");
 
             // Schedule next heartbeat.
-            ScheduleHeartbeat(/* immediately */ false);
+            ScheduleHeartbeat(/*immediately*/ false);
         } else {
             YT_LOG_WARNING(rspOrError, "Error reporting cluster node heartbeat to master");
             if (IsRetriableError(rspOrError)) {
                 ScheduleHeartbeat(/* immediately*/ false);
             } else {
-                ResetAndRegisterAtMaster(/* firstTime */ false);
+                ResetAndRegisterAtMaster(/*firstTime*/ false);
             }
         }
     }
@@ -677,7 +700,7 @@ private:
     }
 
     void OnDynamicConfigChanged(
-        const TClusterNodeDynamicConfigPtr& /* oldNodeConfig */,
+        const TClusterNodeDynamicConfigPtr& /*oldNodeConfig*/,
         const TClusterNodeDynamicConfigPtr& newNodeConfig)
     {
         VERIFY_THREAD_AFFINITY(ControlThread);

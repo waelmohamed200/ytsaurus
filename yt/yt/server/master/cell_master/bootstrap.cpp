@@ -130,6 +130,7 @@
 #include <yt/yt/ytlib/election/cell_manager.h>
 
 #include <yt/yt/ytlib/hive/cell_directory.h>
+#include <yt/yt/ytlib/hive/cell_directory_synchronizer.h>
 #include <yt/yt/ytlib/hive/cluster_directory.h>
 #include <yt/yt/ytlib/hive/cluster_directory_synchronizer.h>
 
@@ -935,32 +936,6 @@ void TBootstrap::DoInitialize()
             /*authenticator*/ nullptr);
     }
 
-    auto localTransactionParticipantProvider = CreateTransactionParticipantProvider(
-        CellDirectory_,
-        TimestampProvider_,
-        GetKnownParticipantCellTags());
-
-    std::vector transactionParticipantProviders = {std::move(localTransactionParticipantProvider)};
-
-    if (groundClusterName) {
-        auto remoteTransactionParticipantProvider = CreateTransactionParticipantProvider(ClusterConnection_->GetClusterDirectory());
-        transactionParticipantProviders.push_back(std::move(remoteTransactionParticipantProvider));
-    }
-
-    TransactionSupervisor_ = CreateTransactionSupervisor(
-        Config_->TransactionSupervisor,
-        HydraFacade_->GetAutomatonInvoker(EAutomatonThreadQueue::TransactionSupervisor),
-        HydraFacade_->GetTransactionTrackerInvoker(),
-        HydraFacade_->GetHydraManager(),
-        HydraFacade_->GetAutomaton(),
-        HydraFacade_->GetResponseKeeper(),
-        TransactionManager_,
-        CellId_,
-        PrimaryCellTag_,
-        TimestampProvider_,
-        std::move(transactionParticipantProviders),
-        NativeAuthenticator_);
-
     LeaseManager_ = CreateLeaseManager(
         Config_->LeaseManager,
         HydraFacade_->GetHydraManager(),
@@ -1018,6 +993,33 @@ void TBootstrap::DoInitialize()
         HydraFacade_->GetAutomatonInvoker(EAutomatonThreadQueue::CellDirectorySynchronizer));
     CellDirectorySynchronizer_->Start();
 
+    auto localTransactionParticipantProvider = CreateTransactionParticipantProvider(
+        CellDirectory_,
+        CellDirectorySynchronizer_,
+        TimestampProvider_,
+        GetKnownParticipantCellTags());
+
+    auto transactionParticipantProviders = std::vector{std::move(localTransactionParticipantProvider)};
+
+    if (groundClusterName) {
+        auto remoteTransactionParticipantProvider = CreateTransactionParticipantProvider(ClusterConnection_->GetClusterDirectory());
+        transactionParticipantProviders.push_back(std::move(remoteTransactionParticipantProvider));
+    }
+
+    TransactionSupervisor_ = CreateTransactionSupervisor(
+        Config_->TransactionSupervisor,
+        HydraFacade_->GetAutomatonInvoker(EAutomatonThreadQueue::TransactionSupervisor),
+        HydraFacade_->GetTransactionTrackerInvoker(),
+        HydraFacade_->GetHydraManager(),
+        HydraFacade_->GetAutomaton(),
+        HydraFacade_->GetResponseKeeper(),
+        TransactionManager_,
+        CellId_,
+        PrimaryCellTag_,
+        TimestampProvider_,
+        std::move(transactionParticipantProviders),
+        NativeAuthenticator_);
+
     DiscoveryQueue_ = New<TActionQueue>("Discovery");
     auto discoveryServerConfig = New<TDiscoveryServerConfig>();
     discoveryServerConfig->ServerAddresses = std::move(addresses);
@@ -1064,13 +1066,15 @@ void TBootstrap::DoInitialize()
 
 void TBootstrap::InitializeTimestampProvider()
 {
-    auto timestampProviderChannel = CreateTimestampProviderChannel(Config_->TimestampProvider, ChannelFactory_);
     if (MulticellManager_->IsPrimaryMaster() && !Config_->EnableTimestampManager) {
-        TimestampProvider_ = CreateBatchingRemoteTimestampProvider(
-            Config_->TimestampProvider,
-            std::move(timestampProviderChannel));
-        RpcServer_->RegisterService(CreateTimestampProxyService(TimestampProvider_, /*authenticator*/ nullptr));
+        TimestampProvider_ = CreateBatchingRemoteTimestampProvider(Config_->TimestampProvider, ChannelFactory_);
+
+        RpcServer_->RegisterService(CreateTimestampProxyService(
+            TimestampProvider_,
+            /*alienProviders*/ {},
+            /*authenticator*/ nullptr));
     } else {
+        auto timestampProviderChannel = CreateTimestampProviderChannel(Config_->TimestampProvider, ChannelFactory_);
         TimestampProvider_ = CreateRemoteTimestampProvider(
             Config_->TimestampProvider,
             std::move(timestampProviderChannel));
@@ -1259,6 +1263,12 @@ void TBootstrap::OnDynamicConfigChanged(const TDynamicClusterConfigPtr& /*oldCon
     ReconfigureNativeSingletons(Config_, config->CellMaster);
 
     HydraFacade_->Reconfigure(config->CellMaster);
+
+    const auto& testingConfig = config->MulticellManager->Testing;
+    // TODO(cherepashka): temporary logic.
+    if (testingConfig->MasterCellDirectoryOverride) {
+        MulticellManager_->GetMasterCellConnectionConfigs()->SecondaryMasters = testingConfig->MasterCellDirectoryOverride->SecondaryMasters;
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

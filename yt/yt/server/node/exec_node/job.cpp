@@ -206,25 +206,6 @@ TJob::TJob(
 
     AddJobEvent(JobState_, JobPhase_);
 
-    if (UserJobSpec_ && UserJobSpec_->has_network_project_id()) {
-        auto addresses = Bootstrap_->GetConfig()->Addresses;
-        ResolvedNodeAddresses_.reserve(addresses.size());
-        for (const auto& [addressName, address] : addresses) {
-            auto* resolver = TAddressResolver::Get();
-            auto resolvedAddressOrError = WaitFor(resolver->Resolve(address));
-            YT_LOG_DEBUG_IF(
-                !resolvedAddressOrError.IsOK(),
-                resolvedAddressOrError,
-                "Failed to resolve node address (AddressName: %v, Address: %v)",
-                addressName,
-                address);
-
-            auto resolvedAddress = std::move(resolvedAddressOrError).ValueOrThrow();
-            YT_VERIFY(resolvedAddress.IsIP6());
-            ResolvedNodeAddresses_.emplace_back(addressName, resolvedAddress.ToIP6Address());
-        }
-    }
-
     HandleJobReport(MakeDefaultJobReport()
         .TreeId(JobSpecExt_->tree_id()));
 }
@@ -237,7 +218,7 @@ TJob::~TJob()
         BIND([jobSpec = std::move(jobSpec)] () mutable { jobSpec.reset(); }));
 }
 
-void TJob::DoStart()
+void TJob::DoStart(TErrorOr<std::vector<TNameWithAddress>>&& resolvedNodeAddresses)
 {
     VERIFY_THREAD_AFFINITY(JobThread);
 
@@ -246,6 +227,12 @@ void TJob::DoStart()
         [&] () {
             auto now = TInstant::Now();
             PrepareStartTime_ = now;
+
+            if (!resolvedNodeAddresses.IsOK()) {
+                THROW_ERROR TError("Failed to resolve node addresses") << std::move(resolvedNodeAddresses);
+            }
+
+            ResolvedNodeAddresses_ = std::move(resolvedNodeAddresses.Value());
 
             StartUserJobMonitoring();
 
@@ -330,9 +317,53 @@ void TJob::Start() noexcept
 
     GetUserSlot()->SetAllocationId(GetAllocationId());
 
-    Bootstrap_
-        ->GetJobInvoker()
-        ->Invoke(BIND(&TJob::DoStart, MakeStrong(this)));
+    TFuture<std::vector<TNameWithAddress>> resolveFuture;
+
+    if (UserJobSpec_ && UserJobSpec_->has_network_project_id()) {
+        std::vector<TFuture<TNameWithAddress>> nodeAddressFutures;
+
+        auto addresses = Bootstrap_->GetConfig()->Addresses;
+        ResolvedNodeAddresses_.reserve(std::size(addresses));
+
+        auto* resolver = TAddressResolver::Get();
+
+        for (auto& [addressName, address] : addresses) {
+            nodeAddressFutures.push_back(
+                resolver->Resolve(address)
+                    .Apply(BIND(
+                        [
+                            this,
+                            this_ = MakeStrong(this),
+                            address = std::move(address),
+                            addressName = std::move(addressName)
+                        ] (const TErrorOr<TNetworkAddress>& resolvedAddressOrError) mutable {
+                            if (!resolvedAddressOrError.IsOK()) {
+                                YT_LOG_WARNING(
+                                    resolvedAddressOrError,
+                                    "Failed to resolve node address (AddressName: %v, Address: %v)",
+                                    addressName,
+                                    address);
+                                THROW_ERROR resolvedAddressOrError;
+                            }
+
+                            const auto& resolvedAddress = resolvedAddressOrError.Value();
+                            YT_VERIFY(resolvedAddress.IsIP6());
+
+                            return TNameWithAddress{
+                                .Name = std::move(addressName),
+                                .Address = resolvedAddress.ToIP6Address(),
+                            };
+                        })));
+        }
+
+        resolveFuture = AllSucceeded(std::move(nodeAddressFutures));
+    } else {
+        resolveFuture = MakeFuture(std::vector<TNameWithAddress>());
+    }
+
+    resolveFuture.SubscribeUnique(
+        BIND(&TJob::DoStart, MakeStrong(this))
+            .Via(Bootstrap_->GetJobInvoker()));
 }
 
 void TJob::Abort(TError error, bool graceful)
@@ -496,7 +527,7 @@ void TJob::OnJobPrepared()
     GuardedAction(
         "OnJobPrepared",
         [&] {
-            JobPrepared_.Fire();
+            JobPrepared_.Fire(MakeStrong(this));
 
             YT_LOG_INFO("Job prepared");
 
@@ -671,7 +702,7 @@ void TJob::OnJobFinalized()
     FillTrafficStatistics(ExecAgentTrafficStatisticsPrefix, statistics, TrafficMeter_);
     StatisticsYson_ = ConvertToYsonString(statistics);
 
-    JobFinished_.Fire();
+    JobFinished_.Fire(MakeStrong(this));
 
     if (!currentError.IsOK()) {
         // NB: it is required to report error that occurred in some place different
@@ -1106,6 +1137,10 @@ void TJob::SetStatistics(const TYsonString& statisticsYson)
 
         if (!GpuSlots_.empty()) {
             EnrichStatisticsWithGpuInfo(&statistics);
+
+            if (IsFullHostGpuJob()) {
+                EnrichStatisticsWithRdmaDeviceInfo(&statistics);
+            }
         }
 
         EnrichStatisticsWithDiskInfo(&statistics);
@@ -1122,7 +1157,7 @@ void TJob::SetStatistics(const TYsonString& statisticsYson)
         if (UserJobSensorProducer_) {
             TSensorBuffer userJobSensors;
             CollectSensorsFromStatistics(&userJobSensors);
-            CollectSensorsFromGpuInfo(&userJobSensors);
+            CollectSensorsFromGpuAndRdmaDeviceInfo(&userJobSensors);
             UserJobSensorProducer_->Update(std::move(userJobSensors));
         }
     }
@@ -1510,6 +1545,16 @@ void TJob::SetStored()
     VERIFY_THREAD_AFFINITY(JobThread);
 
     Stored_ = true;
+    LastStoredTime_ = TInstant::Now();
+}
+
+bool TJob::IsGrowingStale(TDuration maxDelay) const
+{
+    VERIFY_THREAD_AFFINITY(JobThread);
+
+    YT_VERIFY(Stored_);
+
+    return LastStoredTime_ + maxDelay <= TInstant::Now();
 }
 
 bool TJob::IsJobProxyCompleted() const noexcept
@@ -1827,11 +1872,17 @@ std::vector<TDevice> TJob::GetGpuDevices()
             // Exclude device explicitly.
             devices.emplace_back(TDevice{
                 .DeviceName = deviceName,
-                .Enabled = false});
+                .Access = "-"
+            });
         }
     }
 
     return devices;
+}
+
+bool TJob::IsFullHostGpuJob() const
+{
+    return !GpuSlots_.empty() && GpuSlots_.size() == Bootstrap_->GetGpuManager()->GetGpuDevices().size();
 }
 
 void TJob::OnArtifactsDownloaded(const TErrorOr<std::vector<NDataNode::IChunkPtr>>& errorOrArtifacts)
@@ -2257,9 +2308,11 @@ void TJob::Cleanup()
             "Volume remove failed (VolumePath: %v)",
             RootVolume_->GetPath());
         RootVolume_.Reset();
-    }
 
-    CleanupNbdExports();
+        // Clean up NBD exports only if root volume has been created.
+        // In this case there is no race between volume destruction and clean up.
+        CleanupNbdExports();
+    }
 
     if (const auto& slot = GetUserSlot()) {
         if (ShouldCleanSandboxes()) {
@@ -2434,6 +2487,10 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
         }
     }
 
+    if (UserJobSpec_ && UserJobSpec_->slot_container_memory_limit()) {
+        proxyConfig->SlotContainerMemoryLimit = UserJobSpec_->slot_container_memory_limit();
+    }
+
     proxyConfig->MemoryTracker->MemoryStatisticsCachePeriod = proxyConfig->MemoryTracker->UseSMapsMemoryTracker
         ? CommonConfig_->SMapsMemoryTrackerCachePeriod
         : CommonConfig_->MemoryTrackerCachePeriod;
@@ -2452,30 +2509,28 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
     if (RootVolume_ || DockerImage_) {
         proxyConfig->Binds = GetRootFsBinds();
 
-        if (CommonConfig_->UseArtifactBinds) {
-            for (const auto& artifact : Artifacts_) {
-                // Artifact is passed into the job via bind.
-                if (!artifact.BypassArtifactCache && !artifact.CopyFile) {
-                    YT_VERIFY(artifact.Chunk);
+        for (const auto& artifact : Artifacts_) {
+            // Artifact is passed into the job via bind.
+            if (!artifact.BypassArtifactCache && !artifact.CopyFile) {
+                YT_VERIFY(artifact.Chunk);
 
-                    YT_LOG_INFO(
-                        "Make bind for artifact (FileName: %v, Executable: "
-                        "%v, SandboxKind: %v, CompressedDataSize: %v)",
-                        artifact.Name,
-                        artifact.Executable,
-                        artifact.SandboxKind,
-                        artifact.Key.GetCompressedDataSize());
+                YT_LOG_INFO(
+                    "Make bind for artifact (FileName: %v, Executable: %v"
+                    ", SandboxKind: %v, CompressedDataSize: %v)",
+                    artifact.Name,
+                    artifact.Executable,
+                    artifact.SandboxKind,
+                    artifact.Key.GetCompressedDataSize());
 
-                    auto sandboxPath = NFS::CombinePaths("/slot", GetSandboxRelPath(artifact.SandboxKind));
-                    auto targetPath = NFS::CombinePaths(sandboxPath, artifact.Name);
+                auto sandboxPath = NFS::CombinePaths("/slot", GetSandboxRelPath(artifact.SandboxKind));
+                auto targetPath = NFS::CombinePaths(sandboxPath, artifact.Name);
 
-                    auto bind = New<TBindConfig>();
-                    bind->ExternalPath = artifact.Chunk->GetFileName();
-                    bind->InternalPath = targetPath;
-                    bind->ReadOnly = true;
+                auto bind = New<TBindConfig>();
+                bind->ExternalPath = artifact.Chunk->GetFileName();
+                bind->InternalPath = targetPath;
+                bind->ReadOnly = true;
 
-                    proxyConfig->Binds.push_back(std::move(bind));
-                }
+                proxyConfig->Binds.push_back(std::move(bind));
             }
         }
     }
@@ -2621,7 +2676,6 @@ TUserSandboxOptions TJob::BuildUserSandboxOptions()
     options.DiskOverdraftCallback = BIND(&TJob::Fail, MakeWeak(this))
         .Via(Invoker_);
     options.HasRootFSQuota = false;
-    options.EnableArtifactBinds = CommonConfig_->UseArtifactBinds;
     options.EnableDiskQuota = Bootstrap_->GetConfig()->DataNode->VolumeManager->EnableDiskQuota;
     options.UserId = GetUserSlot()->GetUserId();
 
@@ -3099,6 +3153,21 @@ void TJob::EnrichStatisticsWithGpuInfo(TStatistics* statistics)
     statistics->AddSample("/user_job/gpu/memory_total", totalGpuMemory);
 }
 
+void TJob::EnrichStatisticsWithRdmaDeviceInfo(TStatistics* statistics)
+{
+    VERIFY_THREAD_AFFINITY(JobThread);
+
+    TRdmaStatistics aggregatedRdmaStatistics;
+    auto rdmaDevices = Bootstrap_->GetGpuManager()->GetRdmaDevices();
+    for (const auto& rdmaDevice : rdmaDevices) {
+        aggregatedRdmaStatistics.RxByteRate += rdmaDevice.RxByteRate;
+        aggregatedRdmaStatistics.TxByteRate += rdmaDevice.TxByteRate;
+    }
+
+    statistics->AddSample("/user_job/gpu/rdma/rx_bytes", aggregatedRdmaStatistics.RxByteRate);
+    statistics->AddSample("/user_job/gpu/rdma/tx_bytes", aggregatedRdmaStatistics.TxByteRate);
+}
+
 void TJob::EnrichStatisticsWithDiskInfo(TStatistics* statistics)
 {
     auto diskStatistics = GetUserSlot()->GetDiskStatistics();
@@ -3373,7 +3442,7 @@ void TJob::CollectSensorsFromStatistics(ISensorWriter* writer)
     }
 }
 
-void TJob::CollectSensorsFromGpuInfo(ISensorWriter* writer)
+void TJob::CollectSensorsFromGpuAndRdmaDeviceInfo(ISensorWriter* writer)
 {
     VERIFY_THREAD_AFFINITY(JobThread);
 
@@ -3403,6 +3472,15 @@ void TJob::CollectSensorsFromGpuInfo(ISensorWriter* writer)
 
     static const TString StuckName = "gpu/stuck";
 
+    static const TString RxBytesName = "gpu/rdma/rx_bytes";
+    static const TString TxBytesName = "gpu/rdma/tx_bytes";
+
+    auto profileSensorIfNeeded = [&] (const TString& name, double value) {
+        if (sensorNames.contains(name)) {
+            ProfileSensor(name, writer, value);
+        }
+    };
+
     auto gpuInfoMap = Bootstrap_->GetGpuManager()->GetGpuInfoMap();
     for (int index = 0; index < std::ssize(GpuSlots_); ++index) {
         const auto& gpuSlot = GpuSlots_[index];
@@ -3416,12 +3494,6 @@ void TJob::CollectSensorsFromGpuInfo(ISensorWriter* writer)
         const auto& gpuInfo = it->second;
 
         TWithTagGuard tagGuard(writer, "gpu_slot", ToString(index));
-
-        auto profileSensorIfNeeded = [&] (const TString& name, double value) {
-            if (sensorNames.contains(name)) {
-                ProfileSensor(name, writer, value);
-            }
-        };
 
         profileSensorIfNeeded(UtilizationGpuName, gpuInfo.UtilizationGpuRate);
         profileSensorIfNeeded(UtilizationMemoryName, gpuInfo.UtilizationMemoryRate);
@@ -3439,6 +3511,16 @@ void TJob::CollectSensorsFromGpuInfo(ISensorWriter* writer)
         profileSensorIfNeeded(PcieRxBytesName, gpuInfo.PcieRxByteRate);
         profileSensorIfNeeded(PcieTxBytesName, gpuInfo.PcieTxByteRate);
         profileSensorIfNeeded(StuckName, static_cast<double>(gpuInfo.Stuck.Status));
+    }
+
+    if (IsFullHostGpuJob()) {
+        auto rdmaDevices = Bootstrap_->GetGpuManager()->GetRdmaDevices();
+        for (const auto& rdmaDevice : rdmaDevices) {
+            TWithTagGuard tagGuard(writer, "rdma_device", rdmaDevice.Name);
+
+            profileSensorIfNeeded(RxBytesName, rdmaDevice.RxByteRate);
+            profileSensorIfNeeded(TxBytesName, rdmaDevice.TxByteRate);
+        }
     }
 }
 

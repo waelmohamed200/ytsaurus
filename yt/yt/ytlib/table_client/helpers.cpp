@@ -249,7 +249,7 @@ TOutputResult GetWrittenChunksBoundaryKeys(const ISchemalessMultiChunkWriterPtr&
 
             FilterProtoExtensions(
                 lightweightChunkSpec.mutable_chunk_meta()->mutable_extensions(),
-                THashSet<int> { TProtoExtensionTag<NChunkClient::NProto::TMiscExt>::Value });
+                {TProtoExtensionTag<NChunkClient::NProto::TMiscExt>::Value});
         }
 
         ToProto(result.mutable_chunk_specs(), lightweightChunks);
@@ -408,7 +408,7 @@ std::tuple<std::vector<NChunkClient::TInputChunkPtr>, TTableSchemaPtr, bool> Col
 
     std::vector<TInputChunkPtr> inputChunks;
     for (const auto& chunkSpec : chunkSpecs) {
-        inputChunks.push_back(New<TInputChunk>(chunkSpec));
+        inputChunks.push_back(New<TInputChunk>(chunkSpec, schema->GetKeyColumnCount()));
     }
 
     return {std::move(inputChunks), std::move(schema), dynamic};
@@ -457,18 +457,18 @@ void CheckUnavailableChunks(
 
 ////////////////////////////////////////////////////////////////////////////////
 
-ui32 GetHeavyColumnStatisticsHash(ui32 salt, const TStableName& stableName)
+ui32 GetHeavyColumnStatisticsHash(ui32 salt, const TColumnStableName& stableName)
 {
     size_t hash = 0;
     HashCombine(hash, salt);
-    HashCombine(hash, stableName.Get());
+    HashCombine(hash, stableName.Underlying());
 
     return static_cast<ui32>(hash ^ (hash >> 32));
 }
 
 TColumnarStatistics GetColumnarStatistics(
     const NProto::THeavyColumnStatisticsExt& statistics,
-    const std::vector<TStableName>& columnNames,
+    const std::vector<TColumnStableName>& columnNames,
     i64 chunkRowCount)
 {
     YT_VERIFY(statistics.version() == 1);
@@ -529,31 +529,31 @@ void TReaderVirtualValues::FillRleColumn(IUnversionedColumnarRowBatch::TColumn* 
     if (IsIntegralType(value.Type)) {
         ReadColumnarIntegerValues(
             rleColumn,
-            /* startIndex */ 0,
-            /* valueCount */ 1,
+            /*startIndex*/ 0,
+            /*valueCount*/ 1,
             value.Type,
-            /* baseValue */ 0,
+            /*baseValue*/ 0,
             MakeRange(&value.Data.Uint64, 1));
         rleColumn->Values->ZigZagEncoded = false;
     } else if (IsStringLikeType(value.Type)) {
         ReadColumnarStringValues(
             rleColumn,
-            /* startIndex */ 0,
-            /* valueCount */ 1,
+            /*startIndex*/ 0,
+            /*valueCount*/ 1,
             value.Length,
             MakeRange<ui32>(reinterpret_cast<const ui32*>(&Zero_), 1),
             TRef(value.Data.String, value.Length));
     } else if (value.Type == EValueType::Double) {
         ReadColumnarFloatingPointValues(
             rleColumn,
-            /* startIndex */ 0,
-            /* valueCount */ 1,
+            /*startIndex*/ 0,
+            /*valueCount*/ 1,
             MakeRange(&value.Data.Double, 1));
     } else if (value.Type == EValueType::Boolean) {
         ReadColumnarBooleanValues(
             rleColumn,
-            /* startIndex */ 0,
-            /* valueCount */ 1,
+            /*startIndex*/ 0,
+            /*valueCount*/ 1,
             TRef(&value.Data.Boolean, 1));
     } else if (value.Type == EValueType::Null) {
         rleColumn->StartIndex = 0;
@@ -601,7 +601,7 @@ void TReaderVirtualValues::FillColumns(
 
 NProto::THeavyColumnStatisticsExt GetHeavyColumnStatisticsExt(
     const TColumnarStatistics& columnarStatistics,
-    const std::function<TStableName(int index)>& getStableNameByIndex,
+    const std::function<TColumnStableName(int index)>& geTColumnStableNameByIndex,
     int columnCount,
     int maxHeavyColumns)
 {
@@ -616,7 +616,7 @@ NProto::THeavyColumnStatisticsExt GetHeavyColumnStatisticsExt(
     struct TColumnStatistics
     {
         i64 DataWeight;
-        TStableName StableName;
+        TColumnStableName StableName;
     };
     std::vector<TColumnStatistics> columnStatistics;
     columnStatistics.reserve(columnCount);
@@ -629,7 +629,7 @@ NProto::THeavyColumnStatisticsExt GetHeavyColumnStatisticsExt(
         maxColumnDataWeight = std::max<i64>(maxColumnDataWeight, dataWeight);
         columnStatistics.push_back(TColumnStatistics{
             .DataWeight = dataWeight,
-            .StableName = getStableNameByIndex(columnIndex),
+            .StableName = geTColumnStableNameByIndex(columnIndex),
         });
     }
 

@@ -43,6 +43,7 @@ protected:
         config->Secure = false;
         config->RequestTimeout = TDuration::Seconds(1);
         config->Consumer = "yp.unittest";
+        config->EnableRevocation = true;
         return config;
     }
 
@@ -335,6 +336,36 @@ TEST_F(TDefaultSecretVaultTest, GetToken)
         ASSERT_TRUE(response.IsOK());
         ASSERT_EQ("TheToken", response.ValueOrThrow());
     }
+}
+
+TEST_F(TDefaultSecretVaultTest, RevokeToken)
+{
+    TStringStream outputStream;
+    auto jsonConfig = New<NJson::TJsonFormatConfig>();
+    jsonConfig->EncodeUtf8 = false;
+    auto consumer = NJson::CreateJsonConsumer(&outputStream, NYson::EYsonType::Node, jsonConfig);
+    NYTree::BuildYsonFluently(consumer.get())
+        .BeginMap()
+            .Item("status").Value("ok")
+            .Item("result").BeginList()
+                .Item().BeginMap()
+                    .Item("status").Value("ok")
+                .EndMap()
+            .EndList()
+        .EndMap();
+    consumer->Flush();
+
+    SetCallback(outputStream.Str());
+
+    auto service = CreateDefaultSecretVaultService();
+
+    ISecretVaultService::TRevokeDelegationTokenRequest request = {
+        "TheToken",
+        SecretId,
+        SecretSignature,
+    };
+
+    service->RevokeDelegationToken(request);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

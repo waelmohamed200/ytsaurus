@@ -6,9 +6,11 @@ from yt_env_setup import (
 )
 
 from yt_commands import (
-    authors, print_debug, release_breakpoint, remove, wait, wait_breakpoint, with_breakpoint, create, ls, get,
+    authors, create_test_tables, print_debug, release_breakpoint, remove, wait, wait_breakpoint, with_breakpoint, create, ls, get,
     set, exists, update_op_parameters,
     write_table, map, reduce, map_reduce, merge, erase, vanilla, run_sleeping_vanilla, run_test_vanilla, get_operation, raises_yt_error)
+
+from yt_helpers import profiler_factory
 
 from yt.common import YtError, YtResponseError
 
@@ -999,3 +1001,128 @@ class TestMemoryWatchdog(YTEnvSetup):
                 assert err.contains_code(yt_error_codes.ControllerMemoryLimitExceeded)
                 failed += 1
         assert failed == 1
+
+    @authors("arkady-e1ppa")
+    def test_operation_controller_profiling(self):
+        controller_agent = ls("//sys/controller_agents/instances")[0]
+        profiler = profiler_factory().at_controller_agent(controller_agent)
+
+        bucket_names = [
+            "Default",
+            "GetJobSpec",
+            "JobEvents",
+        ]
+
+        counter_names = [
+            "enqueued",
+            "dequeued",
+        ]
+
+        counters = {
+            bucket : {
+                counter : profiler.counter(name=f"fair_share_invoker_pool/{counter}", tags={"thread": "OperationController", "bucket": bucket})
+                for counter in counter_names
+            }
+            for bucket in bucket_names
+        }
+
+        op = run_test_vanilla(with_breakpoint("BREAKPOINT"), job_count=1)
+
+        wait_breakpoint()
+
+        wait(lambda: all(counter["enqueued"].get_delta() > 0 and counter["dequeued"].get_delta() > 0 for _, counter in counters.items()))
+
+        release_breakpoint()
+
+        op.track()
+
+
+class TestLivePreview(YTEnvSetup):
+    NUM_MASTERS = 1
+    NUM_NODES = 3
+    NUM_SCHEDULERS = 1
+    NUM_SECONDARY_MASTER_CELLS = 2
+
+    DELTA_CONTROLLER_AGENT_CONFIG = {
+        "controller_agent": {
+            "map_operation_options": {},
+            "map_reduce_operation_options": {},
+            "snapshot_period": 500,
+        }
+    }
+
+    @authors("galtsev")
+    @pytest.mark.parametrize("clean_start", [False, True])
+    def test_do_not_crash_on_disabling_legacy_live_preview_in_config(self, clean_start):
+        create_test_tables(row_count=1)
+
+        op = map(
+            command=with_breakpoint("BREAKPOINT; cat"),
+            in_=["//tmp/t_in"],
+            out="//tmp/t_out",
+            spec={
+                "testing": {
+                    "delay_inside_revive": 10000,
+                },
+            },
+            track=False,
+        )
+
+        wait(lambda: op.get_state() == "running")
+
+        snapshot_path = op.get_path() + "/snapshot"
+        if not clean_start:
+            wait(lambda: exists(snapshot_path))
+
+        with Restarter(self.Env, CONTROLLER_AGENTS_SERVICE):
+            set(
+                "//sys/controller_agents/config/map_operation_options",
+                {"spec_template": {"enable_legacy_live_preview": False}},
+            )
+            if clean_start and exists(snapshot_path):
+                remove(snapshot_path)
+
+        wait(lambda: op.get_state() == "running")
+
+        op.abort()
+        wait(lambda: op.get_state() == "aborted")
+
+    @authors("galtsev")
+    @pytest.mark.parametrize("clean_start", [False, True])
+    def test_do_not_crash_on_enabling_legacy_live_preview_in_config(self, clean_start):
+        create_test_tables(row_count=1)
+
+        set(
+            "//sys/controller_agents/config/map_reduce_operation_options",
+            {"spec_template": {"enable_legacy_live_preview": False}},
+        )
+
+        op = map_reduce(
+            mapper_command="cat",
+            reducer_command=with_breakpoint("BREAKPOINT; cat"),
+            in_=["//tmp/t_in"],
+            out="//tmp/t_out",
+            sort_by=["x"],
+            spec={
+                "testing": {
+                    "delay_inside_revive": 10000,
+                },
+            },
+            track=False,
+        )
+
+        wait(lambda: op.get_state() == "running")
+
+        snapshot_path = op.get_path() + "/snapshot"
+        if not clean_start:
+            wait(lambda: exists(snapshot_path))
+
+        with Restarter(self.Env, CONTROLLER_AGENTS_SERVICE):
+            set("//sys/controller_agents/config/map_reduce_operation_options", {})
+            if clean_start and exists(snapshot_path):
+                remove(snapshot_path)
+
+        wait(lambda: op.get_state() == "running")
+
+        op.abort()
+        wait(lambda: op.get_state() == "aborted")

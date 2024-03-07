@@ -430,10 +430,16 @@ public:
         securityManager->ValidateResourceUsageIncrease(account, deltaResources);
 
         const auto& multicellManager = Bootstrap_->GetMulticellManager();
+        auto currentCellRoles = multicellManager->GetMasterCellRoles(multicellManager->GetCellTag());
+
+        bool isExternalizable = Any(handler->GetFlags() & ETypeFlags::Externalizable);
+        bool isSequoiaNodeHost = Any(currentCellRoles & EMasterCellRoles::SequoiaNodeHost);
+        bool isPortal = Shard_ && Shard_->GetRoot() && Shard_->GetRoot()->GetType() == EObjectType::PortalExit;
+        bool isMulticell = !multicellManager->GetRegisteredMasterCellTags().empty();
+
         bool defaultExternal =
-            Any(handler->GetFlags() & ETypeFlags::Externalizable) &&
-            (multicellManager->IsPrimaryMaster() || Shard_ && Shard_->GetRoot() && Shard_->GetRoot()->GetType() == EObjectType::PortalExit) &&
-            !multicellManager->GetRegisteredMasterCellTags().empty();
+            isMulticell && isExternalizable &&
+            (multicellManager->IsPrimaryMaster() || isPortal || isSequoiaNodeHost);
         ValidateCreateNonExternalNode(explicitAttributes);
         bool external = explicitAttributes->GetAndRemove<bool>("external", defaultExternal);
 
@@ -457,8 +463,7 @@ public:
             } else {
                 externalCellTag = multicellManager->PickSecondaryChunkHostCell(externalCellBias);
                 if (externalCellTag == InvalidCellTag) {
-                    auto roles = multicellManager->GetMasterCellRoles(multicellManager->GetCellTag());
-                    if (Any(roles & EMasterCellRoles::ChunkHost)) {
+                    if (Any(currentCellRoles & EMasterCellRoles::ChunkHost)) {
                         external = false;
                         externalCellTag = NotReplicatedCellTagSentinel;
                     } else {
@@ -1136,7 +1141,6 @@ public:
         RegisterHandler(CreateLockMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateOrchidTypeHandler(Bootstrap_));
         RegisterHandler(CreateClusterNodeNodeTypeHandler(Bootstrap_));
-        RegisterHandler(CreateLegacyClusterNodeMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateHostMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateRackMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateClusterNodeMapTypeHandler(Bootstrap_));
@@ -1156,14 +1160,16 @@ public:
         RegisterHandler(CreateUserMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateGroupMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateNetworkProjectMapTypeHandler(Bootstrap_));
-        RegisterHandler(CreateProxyRoleMapTypeHandler(Bootstrap_, EObjectType::HttpProxyRoleMap));
-        RegisterHandler(CreateProxyRoleMapTypeHandler(Bootstrap_, EObjectType::RpcProxyRoleMap));
+        RegisterHandler(CreateProxyRoleMapTypeHandler(Bootstrap_, EProxyKind::Http));
+        RegisterHandler(CreateProxyRoleMapTypeHandler(Bootstrap_, EProxyKind::Rpc));
         RegisterHandler(CreatePoolTreeMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateCellNodeTypeHandler(Bootstrap_));
-        RegisterHandler(CreateCellBundleMapTypeHandler(Bootstrap_, ECellarType::Chaos, EObjectType::ChaosCellBundleMap));
-        RegisterHandler(CreateCellMapTypeHandler(Bootstrap_, ECellarType::Chaos, EObjectType::ChaosCellMap));
-        RegisterHandler(CreateCellBundleMapTypeHandler(Bootstrap_, ECellarType::Tablet, EObjectType::TabletCellBundleMap));
-        RegisterHandler(CreateCellMapTypeHandler(Bootstrap_, ECellarType::Tablet, EObjectType::TabletCellMap));
+        RegisterHandler(CreateCellBundleMapTypeHandler(Bootstrap_, ECellarType::Chaos));
+        RegisterHandler(CreateCellMapTypeHandler(Bootstrap_, ECellarType::Chaos));
+        RegisterHandler(CreateVirtualCellMapTypeHandler(Bootstrap_, ECellarType::Chaos));
+        RegisterHandler(CreateCellBundleMapTypeHandler(Bootstrap_, ECellarType::Tablet));
+        RegisterHandler(CreateCellMapTypeHandler(Bootstrap_, ECellarType::Tablet));
+        RegisterHandler(CreateVirtualCellMapTypeHandler(Bootstrap_, ECellarType::Tablet));
         RegisterHandler(CreateTabletMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateTabletActionMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateAreaMapTypeHandler(Bootstrap_));
@@ -1624,8 +1630,8 @@ public:
             if (pathRootType) {
                 *pathRootType = EPathRootType::PortalExit;
             }
-        } else if (currentNode->SequoiaProperties()) {
-            builder.AppendString(currentNode->SequoiaProperties()->Path);
+        } else if (currentNode->ImmutableSequoiaProperties()) {
+            builder.AppendString(currentNode->ImmutableSequoiaProperties()->Path);
             if (pathRootType) {
                 *pathRootType = EPathRootType::SequoiaNode;
             }
@@ -2759,11 +2765,11 @@ private:
                 if (node->IsTrunk() && !node->GetTouchTime()) {
                     const auto* hydraContext = GetCurrentHydraContext();
                     node->SetTouchTime(hydraContext->GetTimestamp());
-                } else if (!node->IsTrunk() && node->GetTouchTime(/* branchIsOk */ true)) {
-                    node->SetTouchTime(TInstant::Zero(), /* branchIsOk */ true);
+                } else if (!node->IsTrunk() && node->GetTouchTime(/*branchIsOk*/ true)) {
+                    node->SetTouchTime(TInstant::Zero(), /*branchIsOk*/ true);
                 }
             } else {
-                node->SetTouchTime(TInstant::Zero(), /* branchIsOk */ true);
+                node->SetTouchTime(TInstant::Zero(), /*branchIsOk*/ true);
             }
 
             if (node->IsTrunk() && node->TryGetExpirationTimeout()) {

@@ -126,6 +126,36 @@ class TTask;
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void SyncThrottleMediumWrite(
+    const IBootstrap* bootstrap,
+    const TTabletSnapshotPtr& tabletSnapshot,
+    const NChunkClient::NProto::TDataStatistics& dataStatistics,
+    const NChunkClient::NProto::TDataStatistics& hunkDataStatistics,
+    const NLogging::TLogger& Logger)
+{
+    auto mediumThrottler = GetBlobMediumWriteThrottler(
+        bootstrap->GetDynamicConfigManager(),
+        tabletSnapshot);
+
+    auto totalDiskSpace = CalculateDiskSpaceUsage(
+        tabletSnapshot->Settings.StoreWriterOptions->ReplicationFactor,
+        dataStatistics.regular_disk_space(),
+        dataStatistics.erasure_disk_space());
+
+    totalDiskSpace += CalculateDiskSpaceUsage(
+        tabletSnapshot->Settings.HunkWriterOptions->ReplicationFactor,
+        hunkDataStatistics.regular_disk_space(),
+        hunkDataStatistics.erasure_disk_space());
+
+    YT_LOG_DEBUG("Throttling blobs media write (DiskSpace: %v)",
+        totalDiskSpace);
+
+    WaitFor(mediumThrottler->Throttle(totalDiskSpace))
+        .ThrowOnError();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TCompactionTaskInfo
     : public TTaskInfoBase
 {
@@ -138,7 +168,7 @@ struct TCompactionTaskInfo
     int Effect;
     NLsm::EStoreCompactionReason Reason;
 
-    i64 GetStoreCount() const
+    int GetStoreCount() const
     {
         return StoreCount;
     }
@@ -195,7 +225,7 @@ protected:
     const TTabletSnapshotPtr TabletSnapshot_;
     const ITransactionPtr Transaction_;
     const bool ResultsInEden_;
-    const EWorkloadCategory WorkloadCategory_;
+    const TClientChunkReadOptions ChunkReadOptions_;
     const NLogging::TLogger Logger;
 
     TTabletStoreWriterConfigPtr StoreWriterConfig_;
@@ -216,13 +246,13 @@ protected:
         TTabletSnapshotPtr tabletSnapshot,
         ITransactionPtr transaction,
         bool resultsInEden,
-        EWorkloadCategory workloadCategory,
+        TClientChunkReadOptions chunkReadOptions,
         NLogging::TLogger logger)
         : Bootstrap_(bootstrap)
         , TabletSnapshot_(std::move(tabletSnapshot))
         , Transaction_(std::move(transaction))
         , ResultsInEden_(resultsInEden)
-        , WorkloadCategory_(workloadCategory)
+        , ChunkReadOptions_(std::move(chunkReadOptions))
         , Logger(std::move(logger))
     { }
 
@@ -258,7 +288,7 @@ protected:
             Transaction_->GetId(),
             TabletSnapshot_->SchemaId,
             /*parentChunkListId*/ {},
-            Bootstrap_->GetOutThrottler(WorkloadCategory_),
+            Bootstrap_->GetOutThrottler(ChunkReadOptions_.WorkloadDescriptor.Category),
             BlockCache_);
         Writers_.push_back(writer);
         return writer;
@@ -278,7 +308,7 @@ private:
     {
         StoreWriterConfig_ = CloneYsonStruct(TabletSnapshot_->Settings.StoreWriterConfig);
         StoreWriterConfig_->MinUploadReplicationFactor = StoreWriterConfig_->UploadReplicationFactor;
-        StoreWriterConfig_->WorkloadDescriptor = TWorkloadDescriptor(WorkloadCategory_);
+        StoreWriterConfig_->WorkloadDescriptor = TWorkloadDescriptor(ChunkReadOptions_.WorkloadDescriptor.Category);
 
         StoreWriterOptions_ = CloneYsonStruct(TabletSnapshot_->Settings.StoreWriterOptions);
         StoreWriterOptions_->ChunksEden = ResultsInEden_;
@@ -288,7 +318,7 @@ private:
         StoreWriterOptions_->MemoryReferenceTracker = Bootstrap_->GetNodeMemoryReferenceTracker()->WithCategory(EMemoryCategory::TabletBackground);
 
         HunkWriterConfig_ = CloneYsonStruct(TabletSnapshot_->Settings.HunkWriterConfig);
-        HunkWriterConfig_->WorkloadDescriptor = TWorkloadDescriptor(WorkloadCategory_);
+        HunkWriterConfig_->WorkloadDescriptor = TWorkloadDescriptor(ChunkReadOptions_.WorkloadDescriptor.Category);
         HunkWriterConfig_->MinUploadReplicationFactor = HunkWriterConfig_->UploadReplicationFactor;
 
         HunkWriterOptions_ = CloneYsonStruct(TabletSnapshot_->Settings.HunkWriterOptions);
@@ -310,10 +340,10 @@ private:
             Bootstrap_->GetLocalHostName(),
             GetNullBlockCache(),
             /*trafficMeter*/ nullptr,
-            Bootstrap_->GetOutThrottler(WorkloadCategory_));
+            Bootstrap_->GetOutThrottler(ChunkReadOptions_.WorkloadDescriptor.Category));
 
         HunkChunkPayloadWriter_ = CreateHunkChunkPayloadWriter(
-            TWorkloadDescriptor(WorkloadCategory_),
+            TWorkloadDescriptor(ChunkReadOptions_.WorkloadDescriptor.Category),
             HunkWriterConfig_,
             HunkChunkWriter_);
         if (TabletSnapshot_->PhysicalSchema->HasHunkColumns()) {
@@ -406,7 +436,9 @@ private:
                 BlockCache_),
             TabletSnapshot_->PhysicalSchema,
             HunkChunkPayloadWriter_,
-            HunkChunkWriterStatistics_);
+            HunkChunkWriterStatistics_,
+            TabletSnapshot_->DictionaryCompressionFactory,
+            ChunkReadOptions_);
     }
 };
 
@@ -434,13 +466,14 @@ public:
         IBootstrap* bootstrap,
         TTabletSnapshotPtr tabletSnapshot,
         ITransactionPtr transaction,
+        TClientChunkReadOptions chunkReadOptions,
         NLogging::TLogger logger)
         : TStoreCompactionSessionBase(
             bootstrap,
             std::move(tabletSnapshot),
             std::move(transaction),
             /*resultsInEden*/ false,
-            EWorkloadCategory::SystemTabletPartitioning,
+            std::move(chunkReadOptions),
             std::move(logger))
     { }
 
@@ -607,13 +640,14 @@ public:
         TTabletSnapshotPtr tabletSnapshot,
         TPartition* partition,
         ITransactionPtr transaction,
+        TClientChunkReadOptions chunkReadOptions,
         NLogging::TLogger logger)
         : TStoreCompactionSessionBase(
             bootstrap,
             std::move(tabletSnapshot),
             std::move(transaction),
             /*resultsInEden*/ partition->IsEden(),
-            EWorkloadCategory::SystemTabletCompaction,
+            std::move(chunkReadOptions),
             std::move(logger))
     { }
 
@@ -676,11 +710,9 @@ public:
             Config_->MaxConcurrentCompactions,
             Profiler_.Gauge("/running_compactions")))
         , CompactionOrchid_(New<TCompactionOrchid>(
-            Bootstrap_->GetDynamicConfigManager()->GetConfig()->TabletNode->StoreCompactor->Orchid->MaxFailedTaskCount,
-            Bootstrap_->GetDynamicConfigManager()->GetConfig()->TabletNode->StoreCompactor->Orchid->MaxCompletedTaskCount))
+            Bootstrap_->GetDynamicConfigManager()->GetConfig()->TabletNode->StoreCompactor->Orchid))
         , PartitioningOrchid_(New<TCompactionOrchid>(
-            Bootstrap_->GetDynamicConfigManager()->GetConfig()->TabletNode->StoreCompactor->Orchid->MaxFailedTaskCount,
-            Bootstrap_->GetDynamicConfigManager()->GetConfig()->TabletNode->StoreCompactor->Orchid->MaxCompletedTaskCount))
+            Bootstrap_->GetDynamicConfigManager()->GetConfig()->TabletNode->StoreCompactor->Orchid))
         , OrchidService_(CreateOrchidService())
     { }
 
@@ -900,7 +932,7 @@ private:
 
         ~TTask();
 
-        i64 GetStoreCount() const
+        int GetStoreCount() const
         {
             return ssize(StoreIds);
         }
@@ -955,7 +987,7 @@ private:
             };
         }
 
-        static inline bool Comparer(const std::unique_ptr<TTask>& lhs, const std::unique_ptr<TTask>& rhs)
+        static bool Comparer(const std::unique_ptr<TTask>& lhs, const std::unique_ptr<TTask>& rhs)
         {
             return GetOrderingTuple(*lhs) < GetOrderingTuple(*rhs);
         }
@@ -981,7 +1013,7 @@ private:
 
     const TCompactionOrchidPtr CompactionOrchid_;
     const TCompactionOrchidPtr PartitioningOrchid_;
-    IYPathServicePtr OrchidService_;
+    const IYPathServicePtr OrchidService_;
 
 
     void OnDynamicConfigChanged(
@@ -1438,6 +1470,7 @@ private:
         IVersionedReaderPtr reader;
         TEdenPartitioningResult partitioningResult;
         TCompactionSessionFinalizeResult finalizeResult;
+        NChunkClient::NProto::TDataStatistics writerDataStatistics;
 
         auto readerProfiler = New<TReaderProfiler>();
         auto writerProfiler = New<TWriterProfiler>();
@@ -1499,6 +1532,7 @@ private:
                 Bootstrap_,
                 tabletSnapshot,
                 transaction,
+                chunkReadOptions,
                 Logger);
 
             auto partitioningResultFuture =
@@ -1514,6 +1548,18 @@ private:
             std::tie(partitioningResult, finalizeResult) = WaitFor(partitioningResultFuture)
                 .ValueOrThrow();
             const auto& partitionWriters = partitioningResult.PartitionStoreWriters;
+
+            for (const auto& [writer, _] : partitioningResult.PartitionStoreWriters) {
+                writerDataStatistics += writer->GetDataStatistics();
+                writerProfiler->Update(writer);
+            }
+
+            SyncThrottleMediumWrite(
+                Bootstrap_,
+                tabletSnapshot,
+                writerDataStatistics,
+                partitioningResult.HunkWriter->GetDataStatistics(),
+                Logger);
 
             // We can release semaphore, because we are no longer actively using resources.
             task->SemaphoreGuard.Release();
@@ -1597,12 +1643,6 @@ private:
                 storeManager->BackoffStoreCompaction(store);
             }
             task->Failed = true;
-        }
-
-        NChunkClient::NProto::TDataStatistics writerDataStatistics;
-        for (const auto& [writer, _] : partitioningResult.PartitionStoreWriters) {
-            writerDataStatistics += writer->GetDataStatistics();
-            writerProfiler->Update(writer);
         }
 
         writerProfiler->Update(
@@ -1889,6 +1929,7 @@ private:
                 tabletSnapshot,
                 partition,
                 transaction,
+                chunkReadOptions,
                 Logger);
 
             auto compactionResultFuture =
@@ -1901,6 +1942,13 @@ private:
 
             std::tie(compactionResult, finalizeResult) = WaitFor(compactionResultFuture)
                 .ValueOrThrow();
+
+            SyncThrottleMediumWrite(
+                Bootstrap_,
+                tabletSnapshot,
+                compactionResult.StoreWriter->GetDataStatistics(),
+                compactionResult.HunkWriter->GetDataStatistics(),
+                Logger);
 
             // We can release semaphore, because we are no longer actively using resources.
             task->SemaphoreGuard.Release();
@@ -2173,6 +2221,7 @@ private:
                 std::move(inboundThrottler),
                 chunkReadOptions.WorkloadDescriptor.Category),
             tablet->GetChunkFragmentReader(),
+            tabletSnapshot->DictionaryCompressionFactory,
             tablet->GetPhysicalSchema(),
             PickCompactableHunkChunkIds(
                 task,

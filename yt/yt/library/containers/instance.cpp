@@ -405,9 +405,9 @@ public:
             .ThrowOnError();
     }
 
-    TErrorOr<ui64> CalculateCpuUserUsage(
-        TErrorOr<ui64>& cpuUsage,
-        TErrorOr<ui64>& cpuSystemUsage) const
+    TErrorOr<i64> CalculateCpuUserUsage(
+        TErrorOr<i64>& cpuUsage,
+        TErrorOr<i64>& cpuSystemUsage) const
     {
         if (cpuUsage.IsOK() && cpuSystemUsage.IsOK()) {
             return cpuUsage.Value() > cpuSystemUsage.Value() ? cpuUsage.Value() - cpuSystemUsage.Value() : 0;
@@ -428,6 +428,9 @@ public:
 
         bool userTimeRequested = false;
         bool contextSwitchesRequested = false;
+        bool volumeCountRequested = false;
+        bool layerCountRequested = false;
+
         for (auto field : fields) {
             if (auto it = NDetail::PortoStatRules.find(field)) {
                 const auto& rule = it->second;
@@ -436,6 +439,10 @@ public:
                 contextSwitchesRequested = true;
             } else if (field == EStatField::CpuUserUsage) {
                 userTimeRequested = true;
+            } else if (field == EStatField::VolumeCounts) {
+                volumeCountRequested = true;
+            } else if (field == EStatField::LayerCounts) {
+                layerCountRequested = true;
             } else {
                 THROW_ERROR_EXCEPTION("Unknown resource field %Qlv requested", field)
                     << TErrorAttribute("container", Name_);
@@ -454,7 +461,7 @@ public:
             }
 
             const auto& [property, callback] = ruleIt->second;
-            auto& record = result[field];
+            auto& record = result.ContainerStats[field];
             if (auto responseIt = propertyMap.find(property); responseIt != propertyMap.end()) {
                 const auto& valueOrError = responseIt->second;
                 if (valueOrError.IsOK()) {
@@ -498,24 +505,54 @@ public:
             }
 
             if (contextSwitchesRequested) {
-                result[EStatField::ContextSwitchesDelta] = TotalContextSwitches_;
+                result.ContainerStats[EStatField::ContextSwitchesDelta] = TotalContextSwitches_;
+            }
+        }
+
+        if (volumeCountRequested) {
+            auto volumeList = WaitFor(Executor_->GetVolumes());
+
+            THashMap<TString, i64> volumeCounts;
+
+            if (volumeList.IsOK()) {
+                for (const auto& volume : volumeList.Value()) {
+                    auto it = volumeCounts.find(volume.Backend);
+
+                    if (it.IsEnd()) {
+                        volumeCounts.insert({volume.Backend, 1});
+                    } else {
+                        it->second = it->second + 1;
+                    }
+                }
+            }
+
+            result.VolumeCounts = volumeCounts;
+        }
+
+        if (layerCountRequested) {
+            auto layerList = WaitFor(Executor_->ListLayers(""));
+
+            if (layerList.IsOK()) {
+                result.ContainerStats[EStatField::LayerCounts] = layerList.Value().size();
+            } else {
+                result.ContainerStats[EStatField::LayerCounts] = layerList.Wrap();
             }
         }
 
         if (contextSwitchesRequested) {
-            ui64 totalContextSwitches = 0;
+            i64 totalContextSwitches = 0;
 
             for (const auto& [container, newValue] : metricMap) {
-                totalContextSwitches += std::max<ui64>(0UL, newValue);
+                totalContextSwitches += std::max<i64>(0UL, newValue);
             }
 
-            result[EStatField::ContextSwitches] = totalContextSwitches;
+            result.ContainerStats[EStatField::ContextSwitches] = totalContextSwitches;
         }
 
         if (userTimeRequested) {
-            result[EStatField::CpuUserUsage] = CalculateCpuUserUsage(
-                result[EStatField::CpuUsage],
-                result[EStatField::CpuSystemUsage]);
+            result.ContainerStats[EStatField::CpuUserUsage] = CalculateCpuUserUsage(
+                result.ContainerStats[EStatField::CpuUsage],
+                result.ContainerStats[EStatField::CpuSystemUsage]);
         }
 
         return result;

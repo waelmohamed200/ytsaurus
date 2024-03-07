@@ -94,6 +94,8 @@ public:
     static void Register(TRegistrar registrar);
 };
 
+bool operator==(const TRowDigestCompactionConfig& lhs, const TRowDigestCompactionConfig& rhs);
+
 DEFINE_REFCOUNTED_TYPE(TRowDigestCompactionConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -214,7 +216,7 @@ public:
     bool EnableStoreFlush;
     bool EnableLsmVerboseLogging;
 
-    ETabletRowMergerType RowMergerType;
+    NTabletClient::ERowMergerType RowMergerType;
     bool MergeRowsOnFlush;
     bool MergeDeletionsOnFlush;
 
@@ -453,8 +455,8 @@ class TStoreBackgroundActivityOrchidConfig
     : public NYTree::TYsonStruct
 {
 public:
-    i64 MaxFailedTaskCount;
-    i64 MaxCompletedTaskCount;
+    int MaxFailedTaskCount;
+    int MaxCompletedTaskCount;
 
     REGISTER_YSON_STRUCT(TStoreBackgroundActivityOrchidConfig);
 
@@ -532,10 +534,11 @@ public:
     std::optional<int> MaxConcurrentCompactions;
     std::optional<int> MaxConcurrentPartitionings;
 
-    NConcurrency::TThroughputThrottlerConfigPtr RowDigestRequestThrottler;
+    TDuration ChunkViewSizeFetchPeriod;
     NConcurrency::TThroughputThrottlerConfigPtr ChunkViewSizeRequestThrottler;
-    TDuration RowDigestThrottlerTryAcquireBackoff;
-    TDuration ChunkViewSizeThrottlerTryAcquireBackoff;
+
+    TDuration RowDigestFetchPeriod;
+    NConcurrency::TThroughputThrottlerConfigPtr RowDigestRequestThrottler;
     bool UseRowDigests;
 
     int MaxCompactionStructuredLogEvents;
@@ -596,6 +599,8 @@ public:
     // COMPAT(babenko): use /tablet_node/throttlers/static_store_preload_in instead.
     NConcurrency::TRelativeThroughputThrottlerConfigPtr PreloadThrottler;
 
+    bool EnablePreliminaryNetworkThrottling;
+
     TInMemoryManagerConfigPtr ApplyDynamic(const TInMemoryManagerDynamicConfigPtr& dynamicConfig) const;
 
     REGISTER_YSON_STRUCT(TInMemoryManagerConfig);
@@ -617,6 +622,7 @@ public:
     std::optional<TDuration> ControlRpcTimeout;
     std::optional<TDuration> HeavyRpcTimeout;
     std::optional<i64> RemoteSendBatchSize;
+    std::optional<bool> EnablePreliminaryNetworkThrottling;
 
     REGISTER_YSON_STRUCT(TInMemoryManagerDynamicConfig);
 
@@ -854,7 +860,7 @@ public:
     static void Register(TRegistrar registrar);
 };
 
-DEFINE_REFCOUNTED_TYPE(TOverloadControllerConfig);
+DEFINE_REFCOUNTED_TYPE(TOverloadControllerConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -863,19 +869,33 @@ class TStatisticsReporterConfig
 {
 public:
     bool Enable;
-    TDuration Period;
-    TDuration Splay;
-    double Jitter;
-    NYPath::TYPath TablePath;
-    i64 MaxTabletsPerTransaction;
+    int MaxTabletsPerTransaction;
     TDuration ReportBackoffTime;
+    NYPath::TYPath TablePath;
+
+    NConcurrency::TPeriodicExecutorOptions PeriodicOptions;
 
     REGISTER_YSON_STRUCT(TStatisticsReporterConfig);
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TStatisticsReporterConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TErrorManagerConfig
+    : public NYTree::TYsonStruct
+{
+public:
+    TDuration DeduplicationCacheTimeout;
+    TDuration ErrorExpirationTimeout;
+
+    REGISTER_YSON_STRUCT(TErrorManagerConfig);
 
     static void Register(TRegistrar registrar);
 };
 
-DEFINE_REFCOUNTED_TYPE(TStatisticsReporterConfig);
+DEFINE_REFCOUNTED_TYPE(TErrorManagerConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -884,6 +904,7 @@ class TMediumThrottlersConfig
 {
 public:
     bool EnableChangelogThrottling;
+    bool EnableBlobThrottling;
 
     // Defines throttling time as a fraction of the request timeout.
     double ThrottleTimeoutFraction;
@@ -974,9 +995,13 @@ public:
 
     TStatisticsReporterConfigPtr StatisticsReporter;
 
+    TErrorManagerConfigPtr ErrorManager;
+
     bool EnableChunkFragmentReaderThrottling;
 
     TMediumThrottlersConfigPtr MediumThrottlers;
+
+    TSlruCacheDynamicConfigPtr CompressionDictionaryCache;
 
     REGISTER_YSON_STRUCT(TTabletNodeDynamicConfig);
 
@@ -1055,6 +1080,8 @@ public:
     NQueryClient::TColumnEvaluatorCacheConfigPtr ColumnEvaluatorCache;
 
     TMasterConnectorConfigPtr MasterConnector;
+
+    TSlruCacheConfigPtr CompressionDictionaryCache;
 
     REGISTER_YSON_STRUCT(TTabletNodeConfig);
 

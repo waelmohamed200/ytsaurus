@@ -2098,8 +2098,13 @@ private:
         const auto& config = Bootstrap_->GetConfigManager()->GetConfig();
         auto expectedMutationCommitDuration = config->CellMaster->ExpectedMutationCommitDuration;
 
-        semaphore->AsyncAcquire(
-            BIND([=, mutation = std::move(mutation), context = std::move(context)] (TAsyncSemaphoreGuard) mutable {
+        semaphore->AsyncAcquire().SubscribeUnique(
+            BIND([=, mutation = std::move(mutation), context = std::move(context)] (TErrorOr<TAsyncSemaphoreGuard>&& guardOrError) mutable {
+                if (!guardOrError.IsOK()) {
+                    context->Reply(TError("Failed to acquire semaphore") << guardOrError);
+                    return;
+                }
+
                 auto requestTimeout = context->GetTimeout();
                 auto timeAfter = NProfiling::GetInstant();
                 if (requestTimeout && timeAfter + expectedMutationCommitDuration >= timeBefore + *requestTimeout) {
@@ -2638,13 +2643,13 @@ private:
             const auto& transactionManager = Bootstrap_->GetTransactionManager();
             transactionManager->SetTransactionTimeout(transaction, timeout);
 
-            if (node->IsPendingRestart()) {
+            if (node->IsPendingRestart() && IsLeader()) {
                 const auto& invoker = Bootstrap_->GetHydraFacade()->GetTransactionTrackerInvoker();
                 invoker->Invoke(BIND([=] {
                     try {
                         transactionManager->PingTransaction(
                             transaction->GetId(),
-                            /* pingAncestors */ false);
+                            /*pingAncestors*/ false);
                     } catch (const std::exception& ex) {
                         YT_LOG_WARNING(
                             ex,
@@ -2657,12 +2662,15 @@ private:
 
         if (auto transaction = node->GetLeaseTransaction()) {
             if (auto timeout = transaction->GetTimeout()) {
-                YT_VERIFY(node->IsPendingRestart() ||
-                    node->GetLastSeenLeaseTransactionTimeout());
+                // COPMAT(danilalexeev)
+                const auto& config = Bootstrap_->GetConfig()->NodeTracker;
+                auto defaultTimeout = node->IsDataNode()
+                    ? config->DefaultDataNodeLeaseTransactionTimeout
+                    : config->DefaultNodeTransactionTimeout;
 
                 auto newTimeout = node->IsPendingRestart()
                     ? GetDynamicConfig()->PendingRestartLeaseTimeout
-                    : *node->GetLastSeenLeaseTransactionTimeout();
+                    : node->GetLastSeenLeaseTransactionTimeout().value_or(defaultTimeout);
 
                 node->SetLastSeenLeaseTransactionTimeout(timeout);
 

@@ -94,6 +94,7 @@ private:
     NProfiling::TCounter NodeUnregistrationCount_;
     NProfiling::TCounter ThrottledRunningJobEventCount_;
     NProfiling::TCounter ThrottledHeartbeatCount_;
+    NProfiling::TCounter ThrottledOperationCount_;
     NProfiling::TCounter WrongIncarnationRequestCount_;
 
     NConcurrency::TActionQueuePtr JobTrackerQueue_;
@@ -233,6 +234,7 @@ private:
         int JobInterruptionRequestCount = 0;
         int JobFailureRequestCount = 0;
         int ThrottledRunningJobEventCount = 0;
+        int ThrottledOperationCount = 0;
     };
 
     IInvokerPtr GetInvoker() const;
@@ -266,7 +268,14 @@ private:
         TIncarnationId IncarnationId;
         THeartbeatRequest Request;
     };
-    THeartbeatCounters DoProcessHeartbeat(
+
+    struct THeartbeatProcessingResult
+    {
+        THeartbeatCounters Counters;
+        THeartbeatProcessingContext Context;
+    };
+
+    THeartbeatProcessingResult DoProcessHeartbeat(
         THeartbeatProcessingContext heartbeatProcessingContext);
 
     struct TJobsToProcessInOperationController
@@ -274,34 +283,36 @@ private:
         std::vector<std::unique_ptr<TJobSummary>> JobSummaries;
         std::vector<TJobToAbort> JobsToAbort;
     };
-    void HandleJobInfo(
+
+    // Returns |true| iff job event was handled (not throttled).
+    bool HandleJobInfo(
         TNodeJobs::TJobIterator jobIt,
         TNodeJobs& nodeJobs,
         TOperationInfo& operationInfo,
         TJobsToProcessInOperationController& jobsToProcessInOperationController,
         TCtxHeartbeat::TTypedResponse* response,
-        std::unique_ptr<TJobSummary> jobSummary,
+        std::unique_ptr<TJobSummary>& jobSummary,
         const NLogging::TLogger& Logger,
         THeartbeatCounters& heartbeatCounters,
         bool shouldSkipRunningJobEvents = false);
 
-    void HandleRunningJobInfo(
+    bool HandleRunningJobInfo(
         TNodeJobs::TJobIterator jobIt,
         TNodeJobs& nodeJobs,
         TOperationInfo& operationInfo,
         TJobsToProcessInOperationController& jobsToProcessInOperationController,
         TCtxHeartbeat::TTypedResponse* response,
-        std::unique_ptr<TJobSummary> jobSummary,
+        std::unique_ptr<TJobSummary>& jobSummary,
         const NLogging::TLogger& Logger,
         THeartbeatCounters& heartbeatCounters,
         bool shouldSkipRunningJobEvents);
-    void HandleFinishedJobInfo(
+    bool HandleFinishedJobInfo(
         TNodeJobs::TJobIterator jobIt,
         TNodeJobs& nodeJobs,
         TOperationInfo& operationInfo,
         TJobsToProcessInOperationController& jobsToProcessInOperationController,
         TCtxHeartbeat::TTypedResponse* response,
-        std::unique_ptr<TJobSummary> jobSummary,
+        std::unique_ptr<TJobSummary>& jobSummary,
         const NLogging::TLogger& Logger,
         THeartbeatCounters& heartbeatCounters);
 

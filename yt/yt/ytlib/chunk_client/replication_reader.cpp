@@ -725,7 +725,7 @@ protected:
             NodeStatusDirectory_->UpdateSuspicionMarkTime(
                 peer.Replica.GetNodeId(),
                 peer.Address,
-                /* suspicious */ true,
+                /*suspicious*/ true,
                 std::nullopt);
         }
 
@@ -1322,7 +1322,7 @@ private:
             NodeStatusDirectory_->UpdateSuspicionMarkTime(
                 peer.Replica.GetNodeId(),
                 peer.Address,
-                /* suspicious */ false,
+                /*suspicious*/ false,
                 peer.NodeSuspicionMarkTime);
             peer.NodeSuspicionMarkTime.reset();
 
@@ -1574,7 +1574,9 @@ public:
         : TSessionBase(
             reader,
             options.ClientOptions,
-            std::move(bandwidthThrottler),
+            std::move(options.DisableBandwidthThrottler
+                ? GetUnlimitedThrottler()
+                : std::move(bandwidthThrottler)),
             std::move(rpsThrottler),
             options.SessionInvoker)
         , BlockIndexes_(blockIndexes)
@@ -1929,9 +1931,8 @@ private:
         auto rspFuture = req->Invoke();
         SetSessionFuture(rspFuture.As<void>());
         auto rspOrError = WaitFor(rspFuture);
-        SessionOptions_.ChunkReaderStatistics->DataWaitTime.fetch_add(
-            dataWaitTimer.GetElapsedValue(),
-            std::memory_order::relaxed);
+        SessionOptions_.ChunkReaderStatistics->RecordDataWaitTime(
+            dataWaitTimer.GetElapsedTime());
 
         bool backup = IsBackup(rspOrError);
         const auto& respondedPeer = backup ? peers[1] : peers[0];
@@ -2001,7 +2002,7 @@ private:
                         << TErrorAttribute("block_id", ToString(blockId))
                         << TErrorAttribute("peer", respondedPeer.Address)
                         << error,
-                    /* raiseAlert */ true);
+                    /*raiseAlert*/ true);
 
                 ++invalidBlockCount;
                 continue;
@@ -2213,7 +2214,9 @@ public:
         : TSessionBase(
             reader,
             options.ClientOptions,
-            std::move(bandwidthThrottler),
+            options.DisableBandwidthThrottler
+                ? GetUnlimitedThrottler()
+                : std::move(bandwidthThrottler),
             std::move(rpsThrottler))
         , FirstBlockIndex_(firstBlockIndex)
         , BlockCount_(blockCount)
@@ -2324,9 +2327,8 @@ private:
         auto rspFuture = req->Invoke();
         SetSessionFuture(rspFuture.As<void>());
         auto rspOrError = WaitFor(rspFuture);
-        SessionOptions_.ChunkReaderStatistics->DataWaitTime.fetch_add(
-            dataWaitTimer.GetElapsedValue(),
-            std::memory_order::relaxed);
+        SessionOptions_.ChunkReaderStatistics->RecordDataWaitTime(
+            dataWaitTimer.GetElapsedTime());
 
         if (!rspOrError.IsOK()) {
             ProcessError(
@@ -2370,7 +2372,7 @@ private:
                         << TErrorAttribute("block_id", ToString(TBlockId(ChunkId_, FirstBlockIndex_ + blocksReceived)))
                         << TErrorAttribute("peer", peerAddress)
                         << error,
-                    /* raiseAlert */ true);
+                    /*raiseAlert*/ true);
 
                 BanPeer(peerAddress, false);
                 FetchedBlocks_.clear();
@@ -2600,9 +2602,8 @@ private:
         auto rspFuture = req->Invoke();
         SetSessionFuture(rspFuture.As<void>());
         auto rspOrError = WaitFor(rspFuture);
-        SessionOptions_.ChunkReaderStatistics->DataWaitTime.fetch_add(
-            dataWaitTimer.GetElapsedValue(),
-            std::memory_order::relaxed);
+        SessionOptions_.ChunkReaderStatistics->RecordMetaWaitTime(
+            dataWaitTimer.GetElapsedTime());
 
         bool backup = IsBackup(rspOrError);
         const auto& respondedPeer = backup ? peers[1] : peers[0];
@@ -3003,9 +3004,8 @@ private:
             response->GetTotalSize(),
             std::memory_order::relaxed);
 
-        SessionOptions_.ChunkReaderStatistics->DataWaitTime.fetch_add(
-            dataWaitTimer.GetElapsedValue(),
-            std::memory_order::relaxed);
+        SessionOptions_.ChunkReaderStatistics->RecordDataWaitTime(
+            dataWaitTimer.GetElapsedTime());
 
         reader->AccountTraffic(response->GetTotalSize(), *respondedPeer.NodeDescriptor);
 

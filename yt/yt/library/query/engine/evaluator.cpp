@@ -31,6 +31,8 @@ namespace NYT::NQueryClient {
 using namespace NConcurrency;
 using namespace NProfiling;
 
+using NCodegen::EExecutionBackend;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TCachedCGQueryImage
@@ -82,10 +84,11 @@ public:
 
         auto Logger = MakeQueryLogger(query);
 
-        YT_LOG_DEBUG("Executing query (Fingerprint: %v, ReadSchema: %v, ResultSchema: %v)",
+        YT_LOG_DEBUG("Executing query (Fingerprint: %v, ReadSchema: %v, ResultSchema: %v, ExecutionBackend: %v)",
             queryFingerprint,
             *query->GetReadSchema(),
-            *query->GetTableSchema());
+            *query->GetTableSchema(),
+            options.ExecutionBackend);
 
         TQueryStatistics statistics;
         NProfiling::TWallTimer wallTime;
@@ -105,7 +108,8 @@ public:
                 aggregateProfilers,
                 statistics,
                 options.EnableCodeCache,
-                options.UseCanonicalNullRelations);
+                options.UseCanonicalNullRelations,
+                options.ExecutionBackend);
 
             // NB: Function contexts need to be destroyed before queryInstance since it hosts destructors.
             auto finalizer = Finally([&] () {
@@ -131,6 +135,7 @@ public:
             queryInstance.Run(
                 fragmentParams.GetLiteralValues(),
                 fragmentParams.GetOpaqueData(),
+                fragmentParams.GetOpaqueDataSizes(),
                 &executionContext);
         } catch (const std::exception& ex) {
             YT_LOG_DEBUG(ex, "Query evaluation failed");
@@ -168,7 +173,8 @@ private:
         const TConstAggregateProfilerMapPtr& aggregateProfilers,
         TQueryStatistics& statistics,
         bool enableCodeCache,
-        bool useCanonicalNullRelations)
+        bool useCanonicalNullRelations,
+        EExecutionBackend executionBackend)
     {
         llvm::FoldingSetNodeID id;
 
@@ -178,6 +184,7 @@ private:
             &variables,
             joinProfiler,
             useCanonicalNullRelations,
+            executionBackend,
             functionProfilers,
             aggregateProfilers);
 

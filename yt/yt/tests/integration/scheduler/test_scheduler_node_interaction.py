@@ -7,7 +7,7 @@ from yt_commands import (
     create_pool, create_pool_tree, read_table, write_table,
     map, run_test_vanilla,
     abort_job, get_job, list_jobs,
-    get_operation_cypress_path, set_banned_flag)
+    get_operation_cypress_path, set_node_banned)
 
 import yt_error_codes
 
@@ -436,7 +436,9 @@ class TestSchedulingTags(YTEnvSetup):
             )
 
         set("//sys/cluster_nodes/{0}/@user_tags".format(self.node), ["default"])
-        time.sleep(1.0)
+
+        wait(lambda: "default" in get("//sys/scheduler/orchid/scheduler/nodes/{}/tags".format(self.node)))
+
         with pytest.raises(YtError):
             map(
                 command="cat",
@@ -444,6 +446,22 @@ class TestSchedulingTags(YTEnvSetup):
                 out="//tmp/t_out",
                 spec={"scheduling_tag": "tagA"},
             )
+
+    @authors("ignat")
+    def test_numeric_tag_filter(self):
+        self._prepare()
+
+        set("//sys/cluster_nodes/{0}/@user_tags".format(self.node), ["default", "127.0.0.1"])
+
+        wait(lambda: "127.0.0.1" in get("//sys/scheduler/orchid/scheduler/nodes/{}/tags".format(self.node)))
+
+        map(
+            command="cat",
+            in_="//tmp/t_in",
+            out="//tmp/t_out",
+            spec={"scheduling_tag": "127.0.0.1"},
+        )
+        assert read_table("//tmp/t_out") == [{"foo": "bar"}]
 
     @authors("ignat")
     def test_pools(self):
@@ -591,7 +609,7 @@ class TestNodeDoubleRegistration(YTEnvSetup):
         assert len(nodes) == 1
         node = nodes[0]
 
-        set_banned_flag(True, [node])
+        set_node_banned(node, True)
         wait(lambda: get("//sys/scheduler/orchid/scheduler/nodes/{}/master_state".format(node)) == "offline")
         wait(lambda: get("//sys/scheduler/orchid/scheduler/nodes/{}/scheduler_state".format(node)) == "online")
 

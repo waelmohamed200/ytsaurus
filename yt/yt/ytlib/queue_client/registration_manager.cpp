@@ -95,6 +95,14 @@ void HandleTableMountInfoError(
 
 ////////////////////////////////////////////////////////////////////////////////
 
+TString NormalizeClusterName(TStringBuf clusterName)
+{
+    clusterName.ChopSuffix(".yt.yandex.net");
+    return TString(clusterName);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 } // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -220,38 +228,30 @@ void TQueueConsumerRegistrationManager::Resolve(
         THROW_ERROR_EXCEPTION("Error perform path resolution for queue and consumer due to expired connection");
     }
 
+    auto pathHandler = [&](NYPath::TRichYPath* path) {
+        auto tableMountInfoOrError = WaitFor(GetTableMountInfo(*path, connection));
+        HandleTableMountInfoError(*queuePath, tableMountInfoOrError, throwOnFailure, Logger);
+
+        if (!path->GetCluster()) {
+            path->SetCluster(*ClusterName_);
+        }
+        path->SetCluster(NormalizeClusterName(*path->GetCluster()));
+
+        if (config->ResolveSymlinks && tableMountInfoOrError.IsOK()) {
+            *path = ResolveObjectPhysicalPath(*path, tableMountInfoOrError.Value());
+        }
+
+        if (config->ResolveReplicas && tableMountInfoOrError.IsOK()) {
+            *path = ResolveReplica(*path, tableMountInfoOrError.Value(), throwOnFailure);
+        }
+    };
+
     if (queuePath) {
-        auto queueTableMountInfoOrError = WaitFor(GetTableMountInfo(*queuePath, connection));
-        HandleTableMountInfoError(*queuePath, queueTableMountInfoOrError, throwOnFailure, Logger);
-
-        if (!queuePath->GetCluster()) {
-            queuePath->SetCluster(*ClusterName_);
-        }
-
-        if (config->ResolveSymlinks && queueTableMountInfoOrError.IsOK()) {
-            *queuePath = ResolveObjectPhysicalPath(*queuePath, queueTableMountInfoOrError.Value());
-        }
-
-        if (config->ResolveReplicas && queueTableMountInfoOrError.IsOK()) {
-            *queuePath = ResolveReplica(*queuePath, queueTableMountInfoOrError.Value(), throwOnFailure);
-        }
+        pathHandler(queuePath);
     }
 
     if (consumerPath) {
-        auto consumerTableMountInfoOrError = WaitFor(GetTableMountInfo(*consumerPath, connection));
-        HandleTableMountInfoError(*consumerPath, consumerTableMountInfoOrError, throwOnFailure, Logger);
-
-        if (!consumerPath->GetCluster()) {
-            consumerPath->SetCluster(*ClusterName_);
-        }
-
-        if (config->ResolveSymlinks && consumerTableMountInfoOrError.IsOK()) {
-            *consumerPath = ResolveObjectPhysicalPath(*consumerPath, consumerTableMountInfoOrError.Value());
-        }
-
-        if (config->ResolveReplicas && consumerTableMountInfoOrError.IsOK()) {
-            *consumerPath = ResolveReplica(*consumerPath, consumerTableMountInfoOrError.Value(), throwOnFailure);
-        }
+        pathHandler(consumerPath);
     }
 }
 
@@ -274,13 +274,17 @@ std::vector<TConsumerRegistrationTableRow> TQueueConsumerRegistrationManager::Li
 
     auto guard = ReaderGuard(CacheSpinLock_);
 
+    auto comparePaths = [](const TRichYPath& lhs, const TRichYPath& rhs) {
+        return lhs.GetPath() == rhs.GetPath() && lhs.GetCluster() == rhs.GetCluster();
+    };
+
     std::vector<TConsumerRegistrationTableRow> result;
     for (const auto& [key, registration] : Registrations_) {
         const auto& [keyQueue, keyConsumer] = key;
-        if (queue && *queue != keyQueue) {
+        if (queue && !comparePaths(*queue, keyQueue)) {
             continue;
         }
-        if (consumer && *consumer != keyConsumer) {
+        if (consumer && !comparePaths(*consumer, keyConsumer)) {
             continue;
         }
 

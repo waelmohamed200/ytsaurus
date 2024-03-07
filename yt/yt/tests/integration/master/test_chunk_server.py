@@ -4,7 +4,7 @@ from yt_commands import (
     authors, create_user, wait, create, ls, get, set, remove, exists,
     start_transaction, insert_rows, build_snapshot, gc_collect, concatenate, create_account, create_rack,
     read_table, write_table, write_journal, merge, sync_create_cells, sync_mount_table, sync_unmount_table, sync_control_chunk_replicator, get_singular_chunk_id,
-    multicell_sleep, update_nodes_dynamic_config, switch_leader, ban_node, add_maintenance, remove_maintenance,
+    multicell_sleep, update_nodes_dynamic_config, switch_leader, set_node_banned, add_maintenance, remove_maintenance,
     set_node_decommissioned, execute_command, is_active_primary_master_leader, is_active_primary_master_follower,
     get_active_primary_master_leader_address, get_active_primary_master_follower_address, create_tablet_cell_bundle)
 
@@ -148,7 +148,7 @@ class TestChunkServer(YTEnvSetup):
         nodes = get("#%s/@stored_replicas" % chunk_id)
 
         for index in (4, 6, 11, 15):
-            ban_node(nodes[index], "test decommission erasure 3")
+            set_node_banned(nodes[index], True, wait_for_master=False)
         set_node_decommissioned(nodes[0], True)
 
         wait(lambda: len(get("#%s/@stored_replicas" % chunk_id)) == 12)
@@ -180,7 +180,7 @@ class TestChunkServer(YTEnvSetup):
         wait(lambda: get("//sys/@chunk_replicator_enabled"))
 
         for i in range(19):
-            ban_node(nodes[i], "test disable replicator when few nodes are online")
+            set_node_banned(nodes[i], True, wait_for_master=False)
 
         wait(lambda: not get("//sys/@chunk_replicator_enabled"))
 
@@ -340,7 +340,7 @@ class TestChunkServer(YTEnvSetup):
         wait(lambda: len(get(f"#{chunk_id}/@stored_replicas")) == 1)
 
         node = get(f"#{chunk_id}/@stored_replicas")[0]
-        ban_node(node, "test_historically_non_vital")
+        set_node_banned(node, True)
 
         wait(lambda: chunk_id in get("//sys/lost_chunks"))
         assert chunk_id not in get("//sys/lost_vital_chunks")
@@ -367,14 +367,14 @@ class TestChunkServer(YTEnvSetup):
         chunk_id = get_singular_chunk_id("//tmp/t")
         wait(lambda: len(get(f"#{chunk_id}/@stored_replicas")) == 3)
 
-        node = get(f"#{chunk_id}/@stored_replicas")[0]
-        maintenance_id = add_maintenance("cluster_node", node, "pending_restart", "")
+        node = str(get(f"#{chunk_id}/@stored_replicas")[0])
+        maintenance_id = add_maintenance("cluster_node", node, "pending_restart", "")[node]
 
         assert get(f"//sys/cluster_nodes/{node}/@pending_restart")
         wait(lambda: chunk_id in get("//sys/replica_temporarily_unavailable_chunks"))
 
         assert remove_maintenance("cluster_node", node, id=maintenance_id) == {
-            "pending_restart": 1
+            node: {"pending_restart": 1}
         }
 
         assert not get(f"//sys/cluster_nodes/{node}/@pending_restart")
@@ -537,28 +537,28 @@ class TestNodeLeaseTransactionTimeout(YTEnvSetup):
         set("//sys/@config/node_tracker/pending_restart_lease_timeout", 1000)
 
         node = ls("//sys/cluster_nodes")[0]
-        maintenance_id = add_maintenance("cluster_node", node, "pending_restart", "")
+        maintenance_id = add_maintenance("cluster_node", node, "pending_restart", "")[node]
 
         assert get(f"//sys/cluster_nodes/{node}/@pending_restart")
 
         wait(lambda: not get(f"//sys/cluster_nodes/{node}/@pending_restart"), sleep_backoff=1.0)
 
-        assert remove_maintenance("cluster_node", node, id=maintenance_id) == {}
+        assert remove_maintenance("cluster_node", node, id=maintenance_id) == {node: {}}
 
     @authors("danilalexeev")
     def test_auto_remove_pending_restart_medium(self):
         set("//sys/@config/node_tracker/pending_restart_lease_timeout", 1000)
 
         nodes = ls("//sys/cluster_nodes")
-        maintenance_ids = [0] * 4
 
-        for i, node in enumerate(nodes):
-            maintenance_ids[i] = add_maintenance("cluster_node", node, "pending_restart", "")
+        maintenance_ids = {}
+        for node in nodes:
+            maintenance_ids.update(add_maintenance("cluster_node", node, "pending_restart", ""))
 
         for _ in range(4):
-            for i, node in enumerate(nodes):
-                remove_maintenance("cluster_node", node, id=maintenance_ids[i])
-                maintenance_ids[i] = add_maintenance("cluster_node", node, "pending_restart", "")
+            for node in nodes:
+                remove_maintenance("cluster_node", node, id=maintenance_ids[node])
+                maintenance_ids.update(add_maintenance("cluster_node", node, "pending_restart", ""))
 
         for node in nodes:
             assert get(f"//sys/cluster_nodes/{node}/@pending_restart")
@@ -634,11 +634,11 @@ class TestChunkServerMulticell(TestChunkServer):
 
         set("//sys/@config/multicell_manager/cell_descriptors",
             {"11": {"roles": ["chunk_host", "dedicated_chunk_host"]}})
-        wait(lambda: has_alert("Cell received conflicting chunk_host and dedicated_chunk_host roles") is True)
+        wait(lambda: has_alert('Cell received conflicting "chunk_host" and "dedicated_chunk_host" roles'))
 
         set("//sys/@config/multicell_manager/cell_descriptors",
             {"11": {"roles": ["chunk_host"]}})
-        wait(lambda: has_alert("Cell received conflicting chunk_host and dedicated_chunk_host roles") is False)
+        wait(lambda: not has_alert('Cell received conflicting "chunk_host" and "dedicated_chunk_host" roles'))
 
     @authors("h0pless")
     def test_dedicated_chunk_host_roles_only(self):
@@ -1017,8 +1017,8 @@ class TestConsistentChunkReplicaPlacement(TestConsistentChunkReplicaPlacementBas
         self._create_table_with_two_consistently_placed_chunks("//tmp/t5")
         chunk_ids = get("//tmp/t5/@chunk_ids")
 
-        troubled_node = get("#{}/@stored_replicas".format(chunk_ids[0]))[1]
-        maintenance_id = add_maintenance("cluster_node", troubled_node, trouble_mode, "test roubled node restart")
+        troubled_node = str(get("#{}/@stored_replicas".format(chunk_ids[0]))[1])
+        maintenance_id = add_maintenance("cluster_node", troubled_node, trouble_mode, "test roubled node restart")[troubled_node]
 
         def are_chunks_collocated(troubled_node_ok):
             chunk0_replicas = get("#{}/@stored_replicas".format(chunk_ids[0]))
@@ -1392,7 +1392,7 @@ class TestChunkServerCypressIntegration(YTEnvSetup):
         write_table("//tmp/t", {"a": "b"}, table_writer={"upload_replication_factor": 8})
         chunk_id = get_singular_chunk_id("//tmp/t")
         node = get(f"#{chunk_id}/@stored_replicas")[0]
-        ban_node(node, "test_historically_non_vital")
+        set_node_banned(node, True)
         wait(lambda: chunk_id in get("//sys/lost_chunks"))
 
         with pytest.raises(YtError, match="Mutating request through virtual map is forbidden"):

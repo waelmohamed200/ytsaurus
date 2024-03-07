@@ -105,6 +105,7 @@
     XX(CommittedResourceUsage, committed_resource_usage) \
     XX(CompressedDataSize, compressed_data_size) \
     XX(CompressionCodec, compression_codec) \
+    XX(CompressionDictionaryId, compression_dictionary_id) \
     XX(CompressionRatio, compression_ratio) \
     XX(CompressionStatistics, compression_statistics) \
     XX(CollocationType, collocation_type) \
@@ -129,6 +130,7 @@
     XX(CurrentMountTransactionId, current_mount_transaction_id) \
     XX(CustomProfilingTagFilter, custom_profiling_tag_filter) \
     XX(CypressTransaction, cypress_transaction) \
+    XX(RegisteredInCypress, registered_in_cypress) \
     XX(DataCenter, data_center) \
     XX(DataWeight, data_weight) \
     XX(Deadline, deadline) \
@@ -165,6 +167,7 @@
     XX(EnableFairShareTruncationInFifoPool, enable_fair_share_truncation_in_fifo_pool) \
     XX(EnableTabletBalancer, enable_tablet_balancer) \
     XX(EnableDynamicStoreRead, enable_dynamic_store_read) \
+    XX(EnableLightweightOperations, enable_lightweight_operations) \
     XX(EnablePrioritySchedulingSegmentModuleAssignment, enable_priority_scheduling_segment_module_assignment) \
     XX(EnableReplicatedTableTracker, enable_replicated_table_tracker) \
     XX(EnableSequoiaReplicas, enable_sequoia_replicas) \
@@ -257,6 +260,7 @@
     XX(IOWeights, io_weights) \
     XX(Jobs, jobs) \
     XX(JobProxyVersion, job_proxy_build_version) \
+    XX(PendingAclsUpdate, pending_acls_update) \
     XX(PendingRestart, pending_restart) \
     XX(KeepFinished, keep_finished) \
     XX(Key, key) \
@@ -481,6 +485,8 @@
     XX(Statistics, statistics) \
     XX(Status, status) \
     XX(StoredReplicas, stored_replicas) \
+    XX(StoredMasterReplicas, stored_master_replicas) \
+    XX(StoredSequoiaReplicas, stored_sequoia_replicas) \
     XX(StoresUpdatePrepared, stores_update_prepared) \
     XX(StoresUpdatePreparedTransactionId, stores_update_prepared_transaction_id) \
     XX(StrongGuaranteeResources, strong_guarantee_resources) \

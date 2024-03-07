@@ -45,12 +45,12 @@ DEFINE_REFCOUNTED_TYPE(TPortoProfilers)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static TErrorOr<ui64> GetFieldOrError(
+static TErrorOr<i64> GetFieldOrError(
     const TResourceUsage& usage,
     EStatField field)
 {
-    auto it = usage.find(field);
-    if (it == usage.end()) {
+    auto it = usage.ContainerStats.find(field);
+    if (it == usage.ContainerStats.end()) {
         return TError("Resource usage is missing %Qlv field", field);
     }
     const auto& errorOrValue = it->second;
@@ -72,7 +72,7 @@ TPortoResourceTracker::TPortoResourceTracker(
     , IsDeltaTracker_(isDeltaTracker)
     , IsForceUpdate_(isForceUpdate)
 {
-    ResourceUsage_ = {
+    ResourceUsage_.ContainerStats = {
         {EStatField::IOReadByte, 0},
         {EStatField::IOWriteByte, 0},
         {EStatField::IOBytesLimit, 0},
@@ -86,7 +86,7 @@ TPortoResourceTracker::TPortoResourceTracker(
     ResourceUsageDelta_ = ResourceUsage_;
 }
 
-static TErrorOr<TDuration> ExtractDuration(TErrorOr<ui64> timeNs)
+static TErrorOr<TDuration> ExtractDuration(TErrorOr<i64> timeNs)
 {
     if (timeNs.IsOK()) {
         return TErrorOr<TDuration>(TDuration::MicroSeconds(timeNs.Value() / 1000));
@@ -102,7 +102,7 @@ TCpuStatistics TPortoResourceTracker::ExtractCpuStatistics(const TResourceUsage&
     auto currentThreadCountPeak = GetFieldOrError(resourceUsage, EStatField::ThreadCount);
 
     PeakThreadCount_ = currentThreadCountPeak.IsOK() && PeakThreadCount_.IsOK()
-        ? std::max<ui64>(
+        ? std::max<i64>(
             PeakThreadCount_.Value(),
             currentThreadCountPeak.Value())
         : currentThreadCountPeak.IsOK() ? currentThreadCountPeak : PeakThreadCount_;
@@ -182,6 +182,20 @@ TNetworkStatistics TPortoResourceTracker::ExtractNetworkStatistics(const TResour
     };
 }
 
+TVolumeStatistics TPortoResourceTracker::ExtractVolumeStatistics(const TResourceUsage& resourceUsage) const
+{
+    return TVolumeStatistics{
+        .VolumeCounts = resourceUsage.VolumeCounts,
+    };
+}
+
+TLayerStatistics TPortoResourceTracker::ExtractLayerStatistics(const TResourceUsage& resourceUsage) const
+{
+    return TLayerStatistics{
+        .LayerCounts = GetFieldOrError(resourceUsage, EStatField::LayerCounts),
+    };
+}
+
 TTotalStatistics TPortoResourceTracker::ExtractTotalStatistics(const TResourceUsage& resourceUsage) const
 {
     return TTotalStatistics{
@@ -189,6 +203,8 @@ TTotalStatistics TPortoResourceTracker::ExtractTotalStatistics(const TResourceUs
         .MemoryStatistics = ExtractMemoryStatistics(resourceUsage),
         .BlockIOStatistics = ExtractBlockIOStatistics(resourceUsage),
         .NetworkStatistics = ExtractNetworkStatistics(resourceUsage),
+        .VolumeStatistics = ExtractVolumeStatistics(resourceUsage),
+        .LayerStatistics = ExtractLayerStatistics(resourceUsage),
     };
 }
 
@@ -282,9 +298,9 @@ void TPortoResourceTracker::UpdateResourceUsageStatisticsIfExpired() const
     }
 }
 
-TErrorOr<ui64> TPortoResourceTracker::CalculateCounterDelta(
-    const TErrorOr<ui64>& oldValue,
-    const TErrorOr<ui64>& newValue) const
+TErrorOr<i64> TPortoResourceTracker::CalculateCounterDelta(
+    const TErrorOr<i64>& oldValue,
+    const TErrorOr<i64>& newValue) const
 {
     if (oldValue.IsOK() && newValue.IsOK()) {
         return newValue.Value() - oldValue.Value();
@@ -334,38 +350,41 @@ void TPortoResourceTracker::ReCalculateResourceUsage(const TResourceUsage& newRe
     TResourceUsage resourceUsageDelta;
 
     for (const auto& stat : InstanceStatFields) {
-        TErrorOr<ui64> oldValue;
-        TErrorOr<ui64> newValue;
+        TErrorOr<i64> oldValue;
+        TErrorOr<i64> newValue;
 
-        if (auto newValueIt = newResourceUsage.find(stat); newValueIt.IsEnd()) {
+        if (auto newValueIt = newResourceUsage.ContainerStats.find(stat); newValueIt.IsEnd()) {
             newValue = TError("Missing property %Qlv in Porto response", stat)
                 << TErrorAttribute("container", Instance_->GetName());
         } else {
             newValue = newValueIt->second;
         }
 
-        if (auto oldValueIt = ResourceUsage_.find(stat); oldValueIt.IsEnd()) {
+        if (auto oldValueIt = ResourceUsage_.ContainerStats.find(stat); oldValueIt.IsEnd()) {
             oldValue = newValue;
         } else {
             oldValue = oldValueIt->second;
         }
 
         if (newValue.IsOK()) {
-            resourceUsage[stat] = newValue;
+            resourceUsage.ContainerStats[stat] = newValue;
         } else {
-            resourceUsage[stat] = oldValue;
+            resourceUsage.ContainerStats[stat] = oldValue;
         }
 
         if (IsCumulativeStatistics(stat)) {
-            resourceUsageDelta[stat] = CalculateCounterDelta(oldValue, newValue);
+            resourceUsageDelta.ContainerStats[stat] = CalculateCounterDelta(oldValue, newValue);
         } else {
             if (newValue.IsOK()) {
-                resourceUsageDelta[stat] = newValue;
+                resourceUsageDelta.ContainerStats[stat] = newValue;
             } else {
-                resourceUsageDelta[stat] = oldValue;
+                resourceUsageDelta.ContainerStats[stat] = oldValue;
             }
         }
     }
+
+    resourceUsage.VolumeCounts = newResourceUsage.VolumeCounts;
+    resourceUsageDelta.VolumeCounts = newResourceUsage.VolumeCounts;
 
     ResourceUsage_ = resourceUsage;
     ResourceUsageDelta_ = resourceUsageDelta;
@@ -398,7 +417,7 @@ TPortoResourceProfiler::TPortoResourceProfiler(
 static void WriteGaugeIfOk(
     ISensorWriter* writer,
     const TString& path,
-    TErrorOr<ui64> valueOrError)
+    TErrorOr<i64> valueOrError)
 {
     if (valueOrError.IsOK()) {
         i64 value = static_cast<i64>(valueOrError.Value());
@@ -412,7 +431,7 @@ static void WriteGaugeIfOk(
 static void WriteCumulativeGaugeIfOk(
     ISensorWriter* writer,
     const TString& path,
-    TErrorOr<ui64> valueOrError,
+    TErrorOr<i64> valueOrError,
     i64 timeDeltaUsec)
 {
     if (valueOrError.IsOK()) {
@@ -551,6 +570,17 @@ void TPortoResourceProfiler::WriteMemoryMetrics(
     WriteGaugeIfOk(writer, "/memory/memory_limit", totalStatistics.MemoryStatistics.MemoryLimit);
 }
 
+void TPortoResourceProfiler::WriteVolumeMetrics(
+    ISensorWriter* writer,
+    TTotalStatistics& totalStatistics,
+    i64 /*timeDeltaUsec*/)
+{
+    for (const auto& [key, count] : totalStatistics.VolumeStatistics.VolumeCounts) {
+        auto guard = TWithTagGuard(writer, "backend", key);
+        writer->AddGauge("/volume/count", count);
+    }
+}
+
 void TPortoResourceProfiler::WriteBlockingIOMetrics(
     ISensorWriter* writer,
     TTotalStatistics& totalStatistics,
@@ -594,6 +624,16 @@ void TPortoResourceProfiler::WriteBlockingIOMetrics(
         i64 waitTimeUs = totalStatistics.BlockIOStatistics.IOWaitTime.Value().MicroSeconds();
         double waitPercent = std::max<double>(0.0, 100. * waitTimeUs / timeDeltaUsec);
         writer->AddGauge("/io/wait", waitPercent);
+    }
+}
+
+void TPortoResourceProfiler::WriteLayerMetrics(
+    ISensorWriter* writer,
+    TTotalStatistics& totalStatistics,
+    i64 /*timeDeltaUsec*/)
+{
+    if (totalStatistics.LayerStatistics.LayerCounts.IsOK()) {
+        writer->AddGauge("/layer/count", totalStatistics.LayerStatistics.LayerCounts.Value());
     }
 }
 
@@ -654,6 +694,8 @@ void TPortoResourceProfiler::CollectSensors(ISensorWriter* writer)
     WriteMemoryMetrics(writer, totalStatistics, timeDeltaUsec);
     WriteBlockingIOMetrics(writer, totalStatistics, timeDeltaUsec);
     WriteNetworkMetrics(writer, totalStatistics, timeDeltaUsec);
+    WriteVolumeMetrics(writer, totalStatistics, timeDeltaUsec);
+    WriteLayerMetrics(writer, totalStatistics, timeDeltaUsec);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

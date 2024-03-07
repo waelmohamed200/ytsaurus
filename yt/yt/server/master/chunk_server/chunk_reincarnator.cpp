@@ -1457,8 +1457,9 @@ private:
         };
 
         while (!ScheduledJobs_.empty() && hasSpareResources()) {
-            TryScheduleJob(std::move(ScheduledJobs_.front()), context);
+            auto job = std::move(ScheduledJobs_.front());
             ScheduledJobs_.pop();
+            TryScheduleJob(std::move(job), context);
         }
     }
 
@@ -2256,12 +2257,7 @@ private:
     {
         using NYT::Load;
 
-        // COMPAT(kvk1920)
-        if (context.GetVersion() >= EMasterReign::ChunkReincarnator) {
-            Load(context, TransactionRotator_);
-        } else {
-            TransactionRotator_.Clear();
-        }
+        Load(context, TransactionRotator_);
 
         // COMPAT(kvk1920)
         if (context.GetVersion() >= EMasterReign::MulticellChunkReincarnator) {

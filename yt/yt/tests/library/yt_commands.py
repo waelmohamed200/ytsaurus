@@ -113,7 +113,7 @@ def raises_yt_error(code=None, required=True):
         elif isinstance(code, str):
             if code not in str(e):
                 raise AssertionError(
-                    "Raised error doesn't contain {}:\n{}".format(
+                    "Raised error doesn't contain \"{}\":\n{}".format(
                         code,
                         e,
                     )
@@ -135,6 +135,10 @@ def print_debug(*args):
     if args:
         root_logger.debug(" ".join(
             decode(arg) if type(arg) is bytes else str(arg) for arg in args))
+
+
+def get_cell_tag(id):
+    return int(id.split("-")[2][:-4], 16)
 
 
 def get_driver(cell_index=0, cluster="primary", api_version=default_api_version):
@@ -1775,9 +1779,10 @@ def add_maintenance(component, address, type, comment, **kwargs):
         "component": component,
         "address": address,
         "type": type,
-        "comment": comment
+        "comment": comment,
+        "supports_per_target_response": True,
     })
-    return execute_command("add_maintenance", kwargs, parse_yson=True)
+    return execute_command("add_maintenance", kwargs, parse_yson=True, unwrap_v4_result=False)
 
 
 def remove_maintenance(component, address, *, id_=None, ids=None, type_=None, user=None,
@@ -1786,7 +1791,8 @@ def remove_maintenance(component, address, *, id_=None, ids=None, type_=None, us
         "component": component,
         "address": address,
         "mine": mine,
-        "all": all ,
+        "all": all,
+        "supports_per_target_response": True,
     })
     if id_ is not None:
         kwargs["ids"] = [id_]
@@ -2624,38 +2630,6 @@ def check_all_stderrs(op, expected_content, expected_count, substring=False):
 ##################################################################
 
 
-def set_banned_flag(value, nodes=None, driver=None, wait_for_scheduler=False):
-    if not nodes:
-        nodes = ls("//sys/cluster_nodes", driver=driver)
-
-    if not nodes:
-        return
-
-    for node in nodes:
-        (ban_node if value else unban_node)(node, driver=driver)
-
-    target_state = "offline" if value else "online"
-
-    def check():
-        return all(
-            get("//sys/cluster_nodes/{0}/@state".format(address), driver=driver) == target_state for address in nodes
-        )
-
-    print_debug(f"waiting for nodes {nodes} to become {target_state}...")
-    wait(check)
-
-    if wait_for_scheduler:
-        def check():
-            return all(
-                get("//sys/scheduler/orchid/scheduler/nodes/{}/master_state".format(address)) == target_state for address in nodes
-            )
-
-        wait(check)
-
-
-##################################################################
-
-
 class PrepareTables(object):
     def _create_table(self, table):
         create("table", table)
@@ -2701,23 +2675,37 @@ def set_node_maintenance_flag(address, type, reason="", driver=None):
         set(f"{path}/@{flag}", True, driver=driver)
 
 
-def ban_node(address, reason="", driver=None):
+def _ban_node(address, reason="", driver=None):
     set_node_maintenance_flag(address, "ban", reason, driver=driver)
 
 
-def unban_node(address, driver=None):
+def _unban_node(address, driver=None):
     clear_node_maintenance_flag(address, "ban", driver=driver)
 
 
-def set_node_banned(address, value, driver=None):
+def set_nodes_banned(nodes, value, wait_for_master=True, wait_for_scheduler=False, driver=None):
     if value:
-        ban_node(address, reason="set_node_banned(True)", driver=driver)
+        for node in nodes:
+            _ban_node(node, reason="set_nodes_banned", driver=driver)
         state = "offline"
     else:
-        unban_node(address, driver=driver)
+        for node in nodes:
+            _unban_node(node, driver=driver)
         state = "online"
-    print_debug(f"waiting for node {address} to become {state}...")
-    wait(lambda: get(f"//sys/cluster_nodes/{address}/@state", driver=driver) == state)
+    if wait_for_master:
+        print_debug(f"Waiting for nodes {nodes} to become {state} at master...")
+        wait(lambda: all(get(f"//sys/cluster_nodes/{node}/@state", driver=driver) == state for node in nodes))
+    if wait_for_scheduler:
+        wait(lambda: all(get(f"//sys/scheduler/orchid/scheduler/nodes/{node}/master_state") == state for node in nodes))
+
+
+def set_all_nodes_banned(value, wait_for_master=True, wait_for_scheduler=False, driver=None):
+    nodes = ls("//sys/cluster_nodes", driver=driver)
+    set_nodes_banned(nodes, value, wait_for_master=wait_for_master, wait_for_scheduler=wait_for_scheduler, driver=driver)
+
+
+def set_node_banned(node, value, wait_for_master=True, wait_for_scheduler=False, driver=None):
+    set_nodes_banned([node], value, wait_for_master=wait_for_master, wait_for_scheduler=wait_for_scheduler, driver=driver)
 
 
 def decommission_node(address, reason="", driver=None):
@@ -3404,3 +3392,84 @@ def get_supported_erasure_codecs(filter=None):
     if filter is None:
         return yt_tests_settings.supported_erasure_codes
     return [codec for codec in filter if codec in yt_tests_settings.supported_erasure_codes]
+
+
+def get_pipeline_spec(pipeline_path, spec_path=None, **kwargs):
+    kwargs["pipeline_path"] = pipeline_path
+    if spec_path is not None:
+        kwargs["spec_path"] = spec_path
+
+    return execute_command("get_pipeline_spec", kwargs, parse_yson=True)
+
+
+def set_pipeline_spec(pipeline_path, spec, is_raw=False, spec_path=None, expected_version=None, force=None, **kwargs):
+    if not is_raw:
+        spec = yson.dumps(spec)
+
+    kwargs["pipeline_path"] = pipeline_path
+    if spec_path is not None:
+        kwargs["spec_path"] = spec_path
+    if expected_version is not None:
+        kwargs["expected_version"] = expected_version
+    if force is not None:
+        kwargs["force"] = force
+
+    return execute_command("set_pipeline_spec", kwargs, input_stream=BytesIO(spec), parse_yson=not is_raw)
+
+
+def remove_pipeline_spec(pipeline_path, spec_path=None, expected_version=None, force=None, **kwargs):
+    kwargs["pipeline_path"] = pipeline_path
+    if spec_path is not None:
+        kwargs["spec_path"] = spec_path
+    if expected_version is not None:
+        kwargs["expected_version"] = expected_version
+    if force is not None:
+        kwargs["force"] = force
+
+    return execute_command("remove_pipeline_spec", kwargs, parse_yson=True)
+
+
+def get_pipeline_dynamic_spec(pipeline_path, spec_path=None, **kwargs):
+    kwargs["pipeline_path"] = pipeline_path
+    if spec_path is not None:
+        kwargs["spec_path"] = spec_path
+
+    return execute_command("get_pipeline_dynamic_spec", kwargs, parse_yson=True)
+
+
+def set_pipeline_dynamic_spec(pipeline_path, spec, is_raw=False, spec_path=None, expected_version=None, **kwargs):
+    if not is_raw:
+        spec = yson.dumps(spec)
+
+    kwargs["pipeline_path"] = pipeline_path
+    if spec_path is not None:
+        kwargs["spec_path"] = spec_path
+    if expected_version is not None:
+        kwargs["expected_version"] = expected_version
+
+    return execute_command("set_pipeline_dynamic_spec", kwargs, input_stream=BytesIO(spec), parse_yson=not is_raw)
+
+
+def remove_pipeline_dynamic_spec(pipeline_path, spec_path=None, expected_version=None, **kwargs):
+    kwargs["pipeline_path"] = pipeline_path
+    if spec_path is not None:
+        kwargs["spec_path"] = spec_path
+    if expected_version is not None:
+        kwargs["expected_version"] = expected_version
+
+    return execute_command("remove_pipeline_dynamic_spec", kwargs, parse_yson=True)
+
+
+def start_pipeline(pipeline_path, **kwargs):
+    kwargs["pipeline_path"] = pipeline_path
+    return execute_command("start_pipeline", kwargs)
+
+
+def stop_pipeline(pipeline_path, **kwargs):
+    kwargs["pipeline_path"] = pipeline_path
+    return execute_command("stop_pipeline", kwargs)
+
+
+def pause_pipeline(pipeline_path, **kwargs):
+    kwargs["pipeline_path"] = pipeline_path
+    return execute_command("pause_pipeline", kwargs)

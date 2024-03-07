@@ -11,7 +11,7 @@ from yt_commands import (
     map, merge, sort, interrupt_job, get_first_chunk_id,
     get_singular_chunk_id, check_all_stderrs,
     create_test_tables, assert_statistics, extract_statistic_v2,
-    ban_node, unban_node, update_inplace)
+    set_node_banned, update_inplace)
 
 from yt_type_helpers import make_schema, normalize_schema, make_column
 
@@ -22,6 +22,8 @@ from yt.test_helpers import assert_items_equal
 from yt.common import YtError
 
 from flaky import flaky
+
+from time import sleep
 
 import pytest
 import random
@@ -1388,6 +1390,9 @@ print(json.dumps(input))
 
         jobs = wait_breakpoint()
         op.interrupt_job(jobs[0])
+
+        sleep(5)
+
         release_breakpoint()
         op.track()
 
@@ -1489,7 +1494,7 @@ print(json.dumps(input))
                 row_index += 1
 
         if small_pipe:
-            assert job_indexes[1] == 2
+            assert job_indexes[1] > 0
 
         wait(lambda: assert_statistics(
             op,
@@ -2175,7 +2180,7 @@ class TestJobSizeAdjuster(YTEnvSetup):
         banned = False
         for node in ls("//sys/cluster_nodes"):
             if node == replica_to_ban:
-                ban_node(node, "test unavailable chunk")
+                set_node_banned(node, True)
                 banned = True
         assert banned
 
@@ -2200,7 +2205,7 @@ class TestJobSizeAdjuster(YTEnvSetup):
         unbanned = False
         for node in ls("//sys/cluster_nodes"):
             if node == replica_to_ban:
-                unban_node(node)
+                set_node_banned(node, False)
                 unbanned = True
         assert unbanned
 

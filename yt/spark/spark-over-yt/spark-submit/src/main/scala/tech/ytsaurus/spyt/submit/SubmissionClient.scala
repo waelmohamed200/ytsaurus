@@ -21,7 +21,6 @@ import scala.util.{Failure, Success, Try}
 
 class SubmissionClient(proxy: String,
                        discoveryPath: String,
-                       spytVersion: String,
                        user: String,
                        token: String) {
   private val log = LoggerFactory.getLogger(getClass)
@@ -47,7 +46,7 @@ class SubmissionClient(proxy: String,
   }
 
   private def addConf(launcher: InProcessLauncher, config: Map[String, String]): Unit = {
-    config.foldLeft(launcher) { case (res, (key, value)) => res.setConf(key, value) }
+    config.foreach { case (key, value) => launcher.setConf(key, value) }
   }
 
   def submit(launcher: InProcessLauncher,
@@ -60,12 +59,12 @@ class SubmissionClient(proxy: String,
 
     launcher.setDeployMode("cluster")
 
-    val jarCachingEnabled = remoteConfig.get("spark.yt.jarCaching").exists(_.toBoolean)
     val ipv6Enabled = remoteConfig.get("spark.hadoop.yt.preferenceIpv6.enabled").exists(_.toBoolean)
 
     addConf(launcher, remoteConfig)
 
     if (ipv6Enabled) {
+      log.debug("preferIPv6Addresses was added to extraJavaOptions")
       launcher.setConf("spark.driver.extraJavaOptions", "-Djava.net.preferIPv6Addresses=true")
       launcher.setConf("spark.executor.extraJavaOptions", "-Djava.net.preferIPv6Addresses=true")
     }
@@ -78,8 +77,6 @@ class SubmissionClient(proxy: String,
     launcher.setConf("spark.hadoop.yt.user", user)
     launcher.setConf("spark.hadoop.yt.token", token)
 
-    launcher.setConf("spark.yt.version", spytVersion)
-    launcher.setConf("spark.yt.pyFiles", wrapCachedJar(s"yt:/${spytPythonPath(spytVersion)}", jarCachingEnabled))
     launcher.setConf("spark.eventLog.dir", "ytEventLog:/" + eventLogPath)
 
     if (useDedicatedDriverOp) {
@@ -223,7 +220,7 @@ class SubmissionClient(proxy: String,
     val submissionId = Try {
       configureCluster(launcher)
       launcher.startApplication()
-      getSubmissionId(submissionFiles)
+      getSubmissionId(submissionFiles, retryConfig.waitSubmissionIdRetryLimit)
     }
     submissionFiles.delete()
 
@@ -246,50 +243,24 @@ class SubmissionClient(proxy: String,
   }
 
   @tailrec
-  private def waitSubmissionResultFile(submissionFiles: SubmissionFiles, retryCount: Int = 4): Unit = {
+  private def waitSubmissionResultFile(submissionFiles: SubmissionFiles, retryLimit: Int): Unit = {
     if (!submissionFiles.id.exists() && !submissionFiles.error.exists()) {
-      if (retryCount <= 0) {
+      if (retryLimit <= 0) {
         throw new RuntimeException(s"Files with submission result were not created")
       } else {
         log.warn(s"Waiting for submission id in file: ${submissionFiles.id}")
         Thread.sleep((5 seconds).toMillis)
-        waitSubmissionResultFile(submissionFiles, retryCount - 1)
+        waitSubmissionResultFile(submissionFiles, retryLimit - 1)
       }
     }
   }
 
-  private def getSubmissionId(submissionFiles: SubmissionFiles): String = {
-    waitSubmissionResultFile(submissionFiles)
+  private def getSubmissionId(submissionFiles: SubmissionFiles, waitSubmissionIdRetryLimit: Int): String = {
+    waitSubmissionResultFile(submissionFiles, waitSubmissionIdRetryLimit)
     if (submissionFiles.error.exists()) {
       val message = FileUtils.readFileToString(submissionFiles.error)
       throw new RuntimeException(s"Spark submission finished with error: $message")
     }
     FileUtils.readFileToString(submissionFiles.id)
-  }
-
-  private val SPARK_BASE_PATH = YPath.simple("//home/spark")
-  private val SPYT_BASE_PATH = SPARK_BASE_PATH.child("spyt")
-  private val RELEASES_SUBDIR = "releases"
-  private val SNAPSHOTS_SUBDIR = "snapshots"
-
-  private def wrapCachedJar(path: String, jarCachingEnabled: Boolean): String = {
-    if (jarCachingEnabled && path.startsWith("yt:/")) {
-      "ytCached:/" + path.drop(4)
-    } else {
-      path
-    }
-  }
-
-  private def spytPythonPath(spytVersion: String): YPath = {
-    getSpytVersionPath(spytVersion).child("spyt.zip")
-  }
-
-  private def getSpytVersionPath(spytVersion: String): YPath = {
-    SPYT_BASE_PATH.child(versionSubdir(spytVersion)).child(spytVersion)
-  }
-
-  private def versionSubdir(version: String): String = {
-    if (version.contains("SNAPSHOT") || version.contains("beta") || version.contains("dev")) SNAPSHOTS_SUBDIR
-    else RELEASES_SUBDIR
   }
 }

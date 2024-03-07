@@ -58,6 +58,22 @@ DEFINE_ENUM(EPortoErrorCode,
 
 ////////////////////////////////////////////////////////////////////////////////
 
+DEFINE_ENUM(EVolumeBackend,
+    (Dir)
+    (Plain)
+    (Bind)
+    (Rbind)
+    (Tmpfs)
+    (Hugetmpfs)
+    (Quota)
+    (Native)
+    (Overlay)
+    (Squash)
+    (Loop)
+    (Rbd)
+    (Lvm)
+);
+
 YT_DEFINE_ERROR_ENUM(
     ((FailedToStartContainer)  (14000))
 );
@@ -110,6 +126,12 @@ DEFINE_ENUM(EStatField,
     (NetRxPackets)
     (NetRxDrops)
     (NetRxLimit)
+
+    // Volumes
+    (VolumeCounts)
+
+    // Layers
+    (LayerCounts)
 );
 
 DEFINE_ENUM(EEnablePorto,
@@ -135,7 +157,8 @@ struct TRootFS
 struct TDevice
 {
     TString DeviceName;
-    bool Enabled;
+    TString Access;
+    std::optional<TString> Path;
 };
 
 struct TInstanceLimits

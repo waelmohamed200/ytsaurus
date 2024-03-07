@@ -3,12 +3,12 @@ from .test_sorted_dynamic_tables import TestSortedDynamicTablesBase
 from yt_helpers import profiler_factory
 
 from yt_commands import (
-    authors, wait, create, exists, get, set, ls, set_banned_flag, insert_rows, remove, select_rows,
+    authors, wait, create, exists, get, set, ls, insert_rows, remove, select_rows,
     lookup_rows, delete_rows, remount_table, build_snapshot,
     write_table, alter_table, read_table, map, sync_reshard_table, sync_create_cells,
     sync_mount_table, sync_unmount_table, sync_flush_table, sync_compact_table, gc_collect,
     start_transaction, commit_transaction, get_singular_chunk_id, write_file, read_hunks,
-    write_journal)
+    write_journal, update_nodes_dynamic_config, raises_yt_error)
 
 from yt_type_helpers import make_schema
 
@@ -67,7 +67,8 @@ class TestSortedDynamicTablesHunks(TestSortedDynamicTablesBase):
     DELTA_MASTER_CONFIG = {}
 
     def _get_table_schema(self, schema, max_inline_hunk_size):
-        schema[1]["max_inline_hunk_size"] = max_inline_hunk_size
+        if "sort_order" not in schema[1]:
+            schema[1]["max_inline_hunk_size"] = max_inline_hunk_size
         return schema
 
     def _create_table(self, chunk_format="table_versioned_simple", max_inline_hunk_size=10, hunk_erasure_codec="none", schema=SCHEMA, dynamic=True):
@@ -235,24 +236,14 @@ class TestSortedDynamicTablesHunks(TestSortedDynamicTablesBase):
         assert len(hunk_chunk_ids) == 1
         hunk_chunk_id = hunk_chunk_ids[0]
 
-        def set_ban_for_parts(part_indices, banned_flag):
-            chunk_replicas = get("#{}/@stored_replicas".format(hunk_chunk_id))
-
-            nodes_to_ban = []
-            for part_index in part_indices:
-                nodes = list(str(r) for r in chunk_replicas if r.attributes["index"] == part_index)
-                nodes_to_ban += nodes
-
-            set_banned_flag(banned_flag, nodes_to_ban)
-
-        set_ban_for_parts([0, 1, 4], True)
+        self._set_ban_for_chunk_parts([0, 1, 4], True, hunk_chunk_id)
         assert_items_equal(lookup_rows("//tmp/t", keys), rows)
-        set_ban_for_parts([0, 1, 4], False)
+        self._set_ban_for_chunk_parts([0, 1, 4], False, hunk_chunk_id)
 
-        set_ban_for_parts([0, 1, 2, 4], True)
+        self._set_ban_for_chunk_parts([0, 1, 2, 4], True, hunk_chunk_id)
         with pytest.raises(YtError):
             lookup_rows("//tmp/t", keys)
-        set_ban_for_parts([0, 1, 2, 4], False)
+        self._set_ban_for_chunk_parts([0, 1, 2, 4], False, hunk_chunk_id)
 
     @authors("gritukan")
     @pytest.mark.parametrize("chunk_format", HUNK_COMPATIBLE_CHUNK_FORMATS)
@@ -278,24 +269,14 @@ class TestSortedDynamicTablesHunks(TestSortedDynamicTablesBase):
         assert len(hunk_chunk_ids) == 1
         hunk_chunk_id = hunk_chunk_ids[0]
 
-        def set_ban_for_parts(part_indices, banned_flag):
-            chunk_replicas = get("#{}/@stored_replicas".format(hunk_chunk_id))
-
-            nodes_to_ban = []
-            for part_index in part_indices:
-                nodes = list(str(r) for r in chunk_replicas if r.attributes["index"] == part_index)
-                nodes_to_ban += nodes
-
-            set_banned_flag(banned_flag, nodes_to_ban)
-
         if available:
-            set_ban_for_parts([0, 1, 4], True)
+            self._set_ban_for_chunk_parts([0, 1, 4], True, hunk_chunk_id)
             time.sleep(1)
             wait(lambda: get("//sys/data_missing_chunks/@count") == 0)
             wait(lambda: get("//sys/parity_missing_chunks/@count") == 0)
             assert_items_equal(lookup_rows("//tmp/t", keys), rows)
         else:
-            set_ban_for_parts([0, 1, 2, 8], True)
+            self._set_ban_for_chunk_parts([0, 1, 2, 8], True, hunk_chunk_id)
             time.sleep(2)
             assert hunk_chunk_id in ls("//sys/data_missing_chunks")
             assert hunk_chunk_id in ls("//sys/parity_missing_chunks")
@@ -1423,7 +1404,8 @@ class TestSortedDynamicTablesHunks(TestSortedDynamicTablesBase):
 class TestOrderedDynamicTablesHunks(TestSortedDynamicTablesBase):
     NUM_TEST_PARTITIONS = 7
 
-    NUM_NODES = 5
+    # Need some extra nodes for erasure repair.
+    NUM_NODES = 12
 
     NUM_SCHEDULERS = 1
 
@@ -1436,7 +1418,8 @@ class TestOrderedDynamicTablesHunks(TestSortedDynamicTablesBase):
     DELTA_MASTER_CONFIG = {}
 
     def _get_table_schema(self, schema, max_inline_hunk_size):
-        schema[1]["max_inline_hunk_size"] = max_inline_hunk_size
+        if "sort_order" not in schema[1]:
+            schema[1]["max_inline_hunk_size"] = max_inline_hunk_size
         return schema
 
     def _create_table(self, optimize_for="lookup", max_inline_hunk_size=10, hunk_erasure_codec="none", schema=SCHEMA):
@@ -1455,10 +1438,6 @@ class TestOrderedDynamicTablesHunks(TestSortedDynamicTablesBase):
                                   enable_lsm_verbose_logging=True,
                                   optimize_for=optimize_for,
                                   hunk_erasure_codec=hunk_erasure_codec)
-
-    def _get_store_chunk_ids(self, path):
-        chunk_ids = get(path + "/@chunk_ids")
-        return [chunk_id for chunk_id in chunk_ids if get("#{}/@chunk_type".format(chunk_id)) == "table"]
 
     def _get_active_store_id(self, hunk_storage, tablet_index=0):
         tablets = get("{}/@tablets".format(hunk_storage))
@@ -1656,3 +1635,860 @@ class TestOrderedDynamicTablesHunks(TestSortedDynamicTablesBase):
 
         remove("//tmp/t")
         wait(lambda: not exists("#{}".format(store_chunk_id)))
+
+    @authors("akozhikhov")
+    def test_read_from_erasure_hunk_storage_with_repair(self):
+        self._separate_tablet_and_data_nodes()
+        set("//sys/@config/chunk_manager/enable_chunk_replicator", False)
+
+        sync_create_cells(1)
+        self._create_table()
+        create("hunk_storage", "//tmp/h", attributes={
+            "store_rotation_period": 2000,
+            "store_removal_grace_period": 100,
+            "read_quorum": 4,
+            "write_quorum": 5,
+            "erasure_codec": "reed_solomon_3_3",
+            "replication_factor": 1,
+        })
+        set("//tmp/t/@hunk_storage_node", "//tmp/h")
+        sync_mount_table("//tmp/h")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 20} for i in range(10)]
+        insert_rows("//tmp/t", rows)
+        for i in range(len(rows)):
+            rows[i]["$tablet_index"] = 0
+            rows[i]["$row_index"] = i
+
+        hunk_store_id = self._get_active_store_id("//tmp/h")
+
+        assert_items_equal(select_rows("* from [//tmp/t]"), rows)
+        sync_unmount_table("//tmp/t")
+        sync_mount_table("//tmp/t")
+        assert_items_equal(select_rows("* from [//tmp/t]"), rows)
+
+        self._set_ban_for_chunk_parts([0, 1, 4], True, hunk_store_id)
+        assert_items_equal(select_rows("* from [//tmp/t]"), rows)
+        self._set_ban_for_chunk_parts([0, 1, 4], False, hunk_store_id)
+
+        self._set_ban_for_chunk_parts([0, 1, 2, 4], True, hunk_store_id)
+        with raises_yt_error("exceeded retry count limit"):
+            assert_items_equal(select_rows("* from [//tmp/t]"), rows)
+        self._set_ban_for_chunk_parts([0, 1, 2, 4], False, hunk_store_id)
+
+    @authors("akozhikhov")
+    @pytest.mark.parametrize("available", [False, True])
+    def test_repair_erasure_hunk_storage_chunk(self, available):
+        set("//sys/@config/chunk_manager/enable_chunk_replicator", False)
+        self._separate_tablet_and_data_nodes()
+
+        sync_create_cells(1)
+        self._create_table()
+        create("hunk_storage", "//tmp/h", attributes={
+            "store_rotation_period": 2000,
+            "store_removal_grace_period": 100,
+            "read_quorum": 4,
+            "write_quorum": 5,
+            "erasure_codec": "reed_solomon_3_3",
+            "replication_factor": 1,
+        })
+        set("//tmp/t/@hunk_storage_node", "//tmp/h")
+        sync_mount_table("//tmp/h")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 20} for i in range(10)]
+        insert_rows("//tmp/t", rows)
+        for i in range(len(rows)):
+            rows[i]["$tablet_index"] = 0
+            rows[i]["$row_index"] = i
+
+        hunk_store_id = self._get_active_store_id("//tmp/h")
+
+        assert_items_equal(select_rows("* from [//tmp/t]"), rows)
+        sync_unmount_table("//tmp/t")
+        sync_mount_table("//tmp/t")
+        assert_items_equal(select_rows("* from [//tmp/t]"), rows)
+
+        def _check_all_replicas_ok():
+            replicas = get("#{}/@stored_replicas".format(hunk_store_id))
+            if len(replicas) != 6:
+                return False
+            if not all(r.attributes["state"] == "sealed" for r in replicas):
+                return False
+            return True
+
+        wait(_check_all_replicas_ok)
+
+        if available:
+            self._set_ban_for_chunk_parts([0, 1, 4], True, hunk_store_id)
+            set("//sys/@config/chunk_manager/enable_chunk_replicator", True)
+            wait(_check_all_replicas_ok)
+            assert_items_equal(select_rows("* from [//tmp/t]"), rows)
+        else:
+            self._set_ban_for_chunk_parts([0, 1, 2, 4], True, hunk_store_id)
+            set("//sys/@config/chunk_manager/enable_chunk_replicator", True)
+            time.sleep(5)
+            assert not _check_all_replicas_ok()
+            with raises_yt_error("exceeded retry count limit"):
+                assert_items_equal(select_rows("* from [//tmp/t]"), rows)
+
+################################################################################
+
+
+class TestHunkValuesDictionaryCompression(TestSortedDynamicTablesHunks):
+    def _setup_for_dictionary_compression(self, path):
+        set("{}/@mount_config/enable_lsm_verbose_logging".format(path), True)
+        set("{}/@mount_config/value_dictionary_compression".format(path), {
+            "enable": True,
+            "column_dictionary_size": 256,
+            "max_processed_chunk_count": 2,
+            "max_decompression_blob_size": 1000,
+        })
+
+    def _wait_dictionaries_built(self, path, previous_hunk_chunk_count):
+        # One dictionary hunk chunk for each of two policies.
+        wait(lambda: len(self._get_hunk_chunk_ids(path)) == previous_hunk_chunk_count + 2)
+
+    def _find_data_hunk_chunks(self, path):
+        store_chunk_ids = self._get_store_chunk_ids(path)
+        data_hunk_chunk_ids = builtins.set()
+        for chunk_id in store_chunk_ids:
+            hunk_chunk_refs = get("#{}/@hunk_chunk_refs".format(chunk_id))
+            for ref in hunk_chunk_refs:
+                if ref["hunk_count"] != 0:
+                    data_hunk_chunk_ids.add(ref["chunk_id"])
+        return list(data_hunk_chunk_ids)
+
+    def _find_dictionary_hunk_chunks(self, path):
+        data_hunk_chunk_ids = self._find_data_hunk_chunks(path)
+        hunk_chunk_ids = self._get_hunk_chunk_ids(path)
+        return [chunk_id for chunk_id in hunk_chunk_ids if chunk_id not in data_hunk_chunk_ids]
+
+    def _perform_forced_compaction(self, path, compaction_type):
+        chunk_ids_before_compaction = builtins.set(self._get_store_chunk_ids(path))
+        set("{}/@forced_{}_revision".format(path, compaction_type), 1)
+        remount_table(path)
+
+        def _check_forced_compaction():
+            chunk_ids = builtins.set(self._get_store_chunk_ids(path))
+            return chunk_ids_before_compaction.isdisjoint(chunk_ids)
+        wait(_check_forced_compaction)
+
+    @authors("akozhikhov")
+    def test_value_compression_simple(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+
+        rows2 = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+    @authors("akozhikhov")
+    def test_value_compression_compaction(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+
+        rows2 = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        hunk_chunk_ids = self._find_data_hunk_chunks("//tmp/t")
+        dictionary_ids = self._find_dictionary_hunk_chunks("//tmp/t")
+        assert len(hunk_chunk_ids) == 2
+        assert len(dictionary_ids) == 2
+
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        new_hunk_chunk_ids = self._find_data_hunk_chunks("//tmp/t")
+        new_dictionary_ids = self._find_dictionary_hunk_chunks("//tmp/t")
+        assert len(new_hunk_chunk_ids) == 1
+        assert len(new_dictionary_ids) == 2
+        assert builtins.set(dictionary_ids) == builtins.set(new_dictionary_ids)
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+    @authors("akozhikhov")
+    def test_value_compression_no_policy_probation(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        set("//tmp/t/@mount_config/value_dictionary_compression/policy_probation_samples_size", 500)
+        set("//tmp/t/@mount_config/value_dictionary_compression/max_acceptable_compression_ratio", 1)
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+
+        rows2 = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+    @authors("akozhikhov")
+    def test_value_compression_dictionary_refs(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        set("//tmp/t/@max_hunk_compaction_size", 1)
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+
+        dictionary_ids = self._find_dictionary_hunk_chunks("//tmp/t")
+        assert len(dictionary_ids) == 2
+
+        def _has_dictionary_ref(chunk_id, expected_ref_count):
+            hunk_chunk_refs = get("#{}/@hunk_chunk_refs".format(chunk_id))
+            assert expected_ref_count is None or expected_ref_count == len(hunk_chunk_refs)
+            has_ref_to_dictionary = False
+            for ref in hunk_chunk_refs:
+                if ref["chunk_id"] in dictionary_ids:
+                    has_ref_to_dictionary = True
+            return has_ref_to_dictionary
+
+        store_chunk_ids = self._get_store_chunk_ids("//tmp/t")
+        for chunk_id in store_chunk_ids:
+            assert not _has_dictionary_ref(chunk_id, 1)
+
+        rows2 = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        new_store_chunk_ids_1 = self._get_store_chunk_ids("//tmp/t")
+        for chunk_id in new_store_chunk_ids_1:
+            has_dictionary_ref = _has_dictionary_ref(chunk_id, None)
+            if chunk_id in store_chunk_ids:
+                assert not has_dictionary_ref
+            else:
+                assert has_dictionary_ref
+
+        self._perform_forced_compaction("//tmp/t", "store_compaction")
+        new_store_chunk_ids_2 = self._get_store_chunk_ids("//tmp/t")
+        assert len(new_store_chunk_ids_2) == 1
+        assert new_store_chunk_ids_2[0] not in new_store_chunk_ids_1
+        assert _has_dictionary_ref(new_store_chunk_ids_2[0], 3)
+
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        new_store_chunk_ids_3 = self._get_store_chunk_ids("//tmp/t")
+        assert len(new_store_chunk_ids_3) == 1
+        assert new_store_chunk_ids_2 != new_store_chunk_ids_3
+        assert _has_dictionary_ref(new_store_chunk_ids_3[0], 2)
+
+        sync_unmount_table("//tmp/t")
+        alter_table("//tmp/t", schema=self._get_table_schema(schema=self.SCHEMA, max_inline_hunk_size=1000))
+        sync_mount_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 2)
+
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        new_store_chunk_ids_4 = self._get_store_chunk_ids("//tmp/t")
+        assert len(new_store_chunk_ids_4) == 1
+        assert new_store_chunk_ids_3 != new_store_chunk_ids_4
+        dictionary_ids = self._find_dictionary_hunk_chunks("//tmp/t")
+        assert _has_dictionary_ref(new_store_chunk_ids_4[0], 1)
+
+        set("//tmp/t/@mount_config/value_dictionary_compression/enable", False)
+        remount_table("//tmp/t")
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        new_store_chunk_ids_5 = self._get_store_chunk_ids("//tmp/t")
+        assert len(new_store_chunk_ids_5) == 1
+        assert new_store_chunk_ids_4 != new_store_chunk_ids_5
+        assert not get("#{}/@hunk_chunk_refs".format(new_store_chunk_ids_5[0]))
+
+    @authors("akozhikhov")
+    def test_value_compression_inline_hunks(self):
+        sync_create_cells(1)
+        self._create_table(max_inline_hunk_size=1000)
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 0)
+
+        rows2 = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+        self._perform_forced_compaction("//tmp/t", "store_compaction")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+    @authors("akozhikhov")
+    def test_value_compression_read_after_disable(self):
+        sync_create_cells(1)
+        self._create_table(max_inline_hunk_size=1000)
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 0)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        set("//tmp/t/@mount_config/value_dictionary_compression/enable", False)
+        remount_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        self._perform_forced_compaction("//tmp/t", "store_compaction")
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+    @authors("akozhikhov")
+    def test_value_compression_read_after_schema_alter(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        sync_unmount_table("//tmp/t")
+        alter_table("//tmp/t", schema=self._get_table_schema(schema=self.SCHEMA, max_inline_hunk_size=1000))
+        sync_mount_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        self._perform_forced_compaction("//tmp/t", "store_compaction")
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+    @authors("akozhikhov")
+    def test_value_compression_specify_policy_and_check_attribute(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        dictionary_ids = self._find_dictionary_hunk_chunks("//tmp/t")
+        assert len(dictionary_ids) == 2
+
+        assert get("#{}/@compression_dictionary_id".format(self._get_store_chunk_ids("//tmp/t")[0])) in dictionary_ids
+        assert get("#{}/@compression_dictionary_id".format(self._find_data_hunk_chunks("//tmp/t")[0])) in dictionary_ids
+        assert not exists("#{}/@compression_dictionary_id".format(dictionary_ids[0]))
+        assert not exists("#{}/@compression_dictionary_id".format(dictionary_ids[1]))
+
+        assert len(self._get_hunk_chunk_ids("//tmp/t")) == 3
+        set("//tmp/t/@mount_config/value_dictionary_compression/applied_policies", ["large_chunk_first"])
+        remount_table("//tmp/t")
+        wait(lambda: len(self._get_hunk_chunk_ids("//tmp/t")) == 2)
+
+        set("//tmp/t/@mount_config/value_dictionary_compression/applied_policies", [])
+        remount_table("//tmp/t")
+        set("//tmp/t/@mount_config/value_dictionary_compression/applied_policies", ["large_chunk_first"])
+        remount_table("//tmp/t")
+        self._wait_dictionaries_built("//tmp/t", 1)
+
+        self._perform_forced_compaction("//tmp/t", "store_compaction")
+        new_dictionary_ids = self._find_dictionary_hunk_chunks("//tmp/t")
+        assert len(new_dictionary_ids) == 2
+        old_dictionary_id = dictionary_ids[0] if dictionary_ids[0] in new_dictionary_ids else dictionary_ids[1]
+        assert old_dictionary_id in new_dictionary_ids
+
+        assert not exists("#{}/@compression_dictionary_id".format(self._get_store_chunk_ids("//tmp/t")[0]))
+        hunk_chunk_dictionary_id = get("#{}/@compression_dictionary_id".format(self._find_data_hunk_chunks("//tmp/t")[0]))
+        assert hunk_chunk_dictionary_id == old_dictionary_id
+        assert not exists("#{}/@compression_dictionary_id".format(dictionary_ids[0]))
+        assert not exists("#{}/@compression_dictionary_id".format(dictionary_ids[1]))
+
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        dictionary_ids = self._find_dictionary_hunk_chunks("//tmp/t")
+        assert len(dictionary_ids) == 1
+        assert dictionary_ids[0] in new_dictionary_ids and dictionary_ids[0] != old_dictionary_id
+
+        assert get("#{}/@compression_dictionary_id".format(self._get_store_chunk_ids("//tmp/t")[0])) == dictionary_ids[0]
+        assert get("#{}/@compression_dictionary_id".format(self._find_data_hunk_chunks("//tmp/t")[0])) == dictionary_ids[0]
+        assert not exists("#{}/@compression_dictionary_id".format(dictionary_ids[0]))
+
+    @authors("akozhikhov")
+    def test_value_compression_multiple_columns_1(self):
+        SCHEMA_WITH_MULTIPLE_COLUMNS = [
+            {"name": "key", "type": "int64", "sort_order": "ascending"},
+            {"name": "value", "type": "string"},
+            {"name": "value2", "type": "string", "max_inline_hunk_size": 200},
+        ]
+        sync_create_cells(1)
+        self._create_table(schema=SCHEMA_WITH_MULTIPLE_COLUMNS)
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100, "value2": "y" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        rows2 = [{"key": i, "value": "value" + str(i) + "x", "value2": "y"} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+        # The second flushed chunk is supposed to remain uncompressed.
+        chunk_ids = self._get_store_chunk_ids("//tmp/t")
+        assert len(chunk_ids) == 2
+        has_dictionary_1 = exists("#{}/@compression_dictionary_id".format(chunk_ids[0]))
+        has_dictionary_2 = exists("#{}/@compression_dictionary_id".format(chunk_ids[1]))
+        assert has_dictionary_1 ^ has_dictionary_2
+
+        hunk_chunk_ids = self._find_data_hunk_chunks("//tmp/t")
+        assert len(hunk_chunk_ids) == 1
+        assert exists("#{}/@compression_dictionary_id".format(hunk_chunk_ids[0]))
+
+    @authors("akozhikhov")
+    def test_value_compression_multiple_columns_2(self):
+        SCHEMA_WITH_MULTIPLE_COLUMNS = [
+            {"name": "key", "type": "int64", "sort_order": "ascending"},
+            {"name": "value", "type": "string", "max_inline_hunk_size": 25},
+            {"name": "value2", "type": "string", "max_inline_hunk_size": 25},
+        ]
+        sync_create_cells(1)
+        self._create_table(schema=SCHEMA_WITH_MULTIPLE_COLUMNS, max_inline_hunk_size=25)
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        # Compressor will be created only for first value column.
+        rows = [{"key": i, "value": "x" * 100, "value2": yson.YsonEntity()} for i in range(100)]
+        rows[0]["value2"] = "y"
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        assert len(self._find_data_hunk_chunks("//tmp/t")) == 1
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        assert len(self._find_data_hunk_chunks("//tmp/t")) == 0
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        rows2 = [{"key": i, "value": "x", "value2": "y" * 100} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+        assert len(self._find_data_hunk_chunks("//tmp/t")) == 1
+
+        rows3 = [{"key": i, "value2": "y" * 100} for i in range(200, 300)]
+        insert_rows("//tmp/t", rows3)
+        sync_flush_table("//tmp/t")
+
+        rows3 = [{**row, "value": yson.YsonEntity()} for row in rows3]
+        keys = [{"key": i} for i in range(300)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2 + rows3)
+
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2 + rows3)
+
+    @authors("akozhikhov")
+    def test_value_compression_lookup_nonexistent_rows(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+    @authors("akozhikhov")
+    def test_value_compression_rebuild_dictionary(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        dictionary_ids = self._find_dictionary_hunk_chunks("//tmp/t")
+
+        set("//tmp/t/@mount_config/value_dictionary_compression/applied_policies", [])
+        remount_table("//tmp/t")
+        set("//tmp/t/@mount_config/value_dictionary_compression/applied_policies", ["large_chunk_first", "fresh_chunk_first"])
+        remount_table("//tmp/t")
+        self._wait_dictionaries_built("//tmp/t", 2)
+
+        rows2 = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+        assert exists("#{}".format(dictionary_ids[0])) ^ exists("#{}".format(dictionary_ids[1]))
+
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+        wait(lambda: not exists("#{}".format(dictionary_ids[0])))
+        wait(lambda: not exists("#{}".format(dictionary_ids[1])))
+
+    @authors("akozhikhov")
+    def test_value_compression_alter_from_static(self):
+        sync_create_cells(1)
+        self._create_table(chunk_format="table_unversioned_schemaless_horizontal", dynamic=False)
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        write_table("//tmp/t", rows)
+        alter_table("//tmp/t", dynamic=True)
+
+        self._setup_for_dictionary_compression("//tmp/t")
+        set("//tmp/t/@chunk_format", "table_versioned_simple")
+
+        sync_mount_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 0)
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        rows2 = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+        self._perform_forced_compaction("//tmp/t", "store_compaction")
+
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+    @authors("akozhikhov")
+    def test_value_compression_destroy_dictionaries_upon_remount(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        dictionary_ids = self._find_dictionary_hunk_chunks("//tmp/t")
+        assert len(dictionary_ids) == 2
+
+        assert exists("#{}".format(dictionary_ids[0]))
+        assert exists("#{}".format(dictionary_ids[1]))
+
+        set("//tmp/t/@mount_config/value_dictionary_compression/enable", False)
+        remount_table("//tmp/t")
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        wait(lambda: not exists("#{}".format(dictionary_ids[0])))
+        wait(lambda: not exists("#{}".format(dictionary_ids[1])))
+
+    @authors("akozhikhov")
+    def test_value_compression_schema_alter_new_column(self):
+        SCHEMA_WITH_MULTIPLE_COLUMNS = [
+            {"name": "key", "type": "int64", "sort_order": "ascending"},
+            {"name": "value", "type": "string", "max_inline_hunk_size": 25},
+            {"name": "value2", "type": "string"},
+        ]
+        sync_create_cells(1)
+        self._create_table(schema=SCHEMA_WITH_MULTIPLE_COLUMNS)
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "x" * 100, "value2": "y" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        sync_unmount_table("//tmp/t")
+        SCHEMA_WITH_MULTIPLE_COLUMNS.append({"name": "value3", "type": "string", "max_inline_hunk_size": 25})
+        alter_table("//tmp/t", schema=SCHEMA_WITH_MULTIPLE_COLUMNS)
+        sync_mount_table("//tmp/t")
+
+        rows2 = [{"key": i, "value": str(i) + "x" * 100, "value2": "y" * 100, "value3": str(i) + "z" * 100} for i in range(100, 200)]
+        insert_rows("//tmp/t", rows2)
+        sync_flush_table("//tmp/t")
+
+        rows = [{**row, "value3": yson.YsonEntity()} for row in rows]
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+        self._perform_forced_compaction("//tmp/t", "store_compaction")
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+        self._perform_forced_compaction("//tmp/t", "compaction")
+        keys = [{"key": i} for i in range(200)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows + rows2)
+
+    @authors("akozhikhov")
+    def test_value_compression_schema_alter_switch_columns(self):
+        SCHEMA_WITH_MULTIPLE_COLUMNS = [
+            {"name": "key", "type": "int64", "sort_order": "ascending"},
+            {"name": "value", "type": "string", "max_inline_hunk_size": 25},
+            {"name": "value2", "type": "string", "max_inline_hunk_size": 25},
+        ]
+        sync_create_cells(1)
+        self._create_table(schema=SCHEMA_WITH_MULTIPLE_COLUMNS)
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "x" * 100, "value2": "y" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        SCHEMA_WITH_MULTIPLE_COLUMNS[1], SCHEMA_WITH_MULTIPLE_COLUMNS[2] = \
+            SCHEMA_WITH_MULTIPLE_COLUMNS[2], SCHEMA_WITH_MULTIPLE_COLUMNS[1]
+        sync_unmount_table("//tmp/t")
+        alter_table("//tmp/t", schema=SCHEMA_WITH_MULTIPLE_COLUMNS)
+        sync_mount_table("//tmp/t")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+    @authors("akozhikhov")
+    @pytest.mark.parametrize("enable_hash_chunk_index", [False, True])
+    @pytest.mark.parametrize("enable_data_node_lookup", [False, True])
+    def test_value_compression_dnl_and_hash_index(self, enable_hash_chunk_index, enable_data_node_lookup):
+        SCHEMA_WITH_MULTIPLE_COLUMNS = [
+            {"name": "key", "type": "int64", "sort_order": "ascending"},
+            {"name": "value", "type": "string", "max_inline_hunk_size": 50},
+            {"name": "value2", "type": "string", "max_inline_hunk_size": 50},
+        ]
+        sync_create_cells(1)
+        self._create_table(schema=SCHEMA_WITH_MULTIPLE_COLUMNS)
+        self._setup_for_dictionary_compression("//tmp/t")
+        if enable_hash_chunk_index:
+            self._enable_hash_chunk_index("//tmp/t")
+        if enable_data_node_lookup:
+            self._enable_data_node_lookup("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100, "value2": str(i) + "y" * 10} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+    @authors("akozhikhov")
+    def test_value_compression_data_weight_statistics(self):
+        SCHEMA_WITH_MULTIPLE_COLUMNS = [
+            {"name": "key", "type": "int64", "sort_order": "ascending"},
+            {"name": "value", "type": "string"},
+            {"name": "value2", "type": "string", "max_inline_hunk_size": 50},
+        ]
+        sync_create_cells(1)
+        self._create_table(schema=SCHEMA_WITH_MULTIPLE_COLUMNS)
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100, "value2": str(i) + "y" * 40} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        chunk_format_statistics = get("//tmp/t/@chunk_format_statistics")
+        assert chunk_format_statistics["table_versioned_simple"]["data_weight"] == 18080
+        assert chunk_format_statistics["table_versioned_simple"]["uncompressed_data_size"] == 10016
+        assert chunk_format_statistics["table_versioned_simple"]["compressed_data_size"] == 3480
+        assert chunk_format_statistics["hunk_default"]["data_weight"] == 11714
+        assert chunk_format_statistics["hunk_default"]["uncompressed_data_size"] == 3627
+        assert chunk_format_statistics["hunk_default"]["compressed_data_size"] == 3627
+
+    @authors("akozhikhov")
+    def test_value_compression_dictionary_cache(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        update_nodes_dynamic_config({
+            "tablet_node": {
+                "compression_dictionary_cache": {
+                    "capacity": 10000000,
+                }
+            }
+        })
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        SCHEMA_WITH_MULTIPLE_COLUMNS = [
+            {"name": "key", "type": "int64", "sort_order": "ascending"},
+            {"name": "value2", "type": "string"},
+            {"name": "value", "type": "string", "max_inline_hunk_size": 25},
+        ]
+        sync_unmount_table("//tmp/t")
+        alter_table("//tmp/t", schema=SCHEMA_WITH_MULTIPLE_COLUMNS)
+        sync_mount_table("//tmp/t")
+
+        rows = [{**row, "value2": yson.YsonEntity()} for row in rows]
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+    @authors("akozhikhov")
+    def test_value_compression_build_from_multiple_blocks(self):
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        set("//tmp/t/@chunk_writer", {"block_size": 25})
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        set("//tmp/t/@mount_config/value_dictionary_compression/desired_sample_count", 20)
+        sync_unmount_table("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 2)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+    @authors("akozhikhov")
+    def test_value_compression_build_after_schema_alter(self):
+        SCHEMA_WITH_MULTIPLE_KEY_COLUMNS = [
+            {"name": "key", "type": "int64", "sort_order": "ascending"},
+            {"name": "key1", "type": "int64", "sort_order": "ascending"},
+            {"name": "value", "type": "string", "max_inline_hunk_size": 10},
+        ]
+
+        sync_create_cells(1)
+        self._create_table()
+        self._setup_for_dictionary_compression("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        rows = [{"key": i, "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        insert_rows("//tmp/t", rows)
+        sync_flush_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 1)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        keys = [{"key": i} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)
+
+        sync_unmount_table("//tmp/t")
+        alter_table("//tmp/t", schema=SCHEMA_WITH_MULTIPLE_KEY_COLUMNS)
+        sync_mount_table("//tmp/t")
+
+        self._wait_dictionaries_built("//tmp/t", 2)
+        self._perform_forced_compaction("//tmp/t", "compaction")
+
+        rows = [{"key": i, "key1": yson.YsonEntity(), "value": "value" + str(i) + "x" * 100} for i in range(100)]
+        assert_items_equal(lookup_rows("//tmp/t", keys), rows)

@@ -104,6 +104,8 @@ namespace {
 
 IBlockDevicePtr CreateCypressFileBlockDevice(
     TNbdConfigPtr nbdConfig,
+    IThroughputThrottlerPtr inThrottler,
+    IThroughputThrottlerPtr outRpsThrottler,
     const TArtifactKey& artifactKey,
     NApi::NNative::IClientPtr client,
     IInvokerPtr invoker,
@@ -133,6 +135,8 @@ IBlockDevicePtr CreateCypressFileBlockDevice(
         artifactKey.nbd_export_id(),
         artifactKey.chunk_specs(),
         std::move(config),
+        std::move(inThrottler),
+        std::move(outRpsThrottler),
         std::move(client),
         std::move(invoker),
         Logger);
@@ -2394,7 +2398,7 @@ public:
             for (auto& overlayData : overlayDataArray) {
                 futures.push_back(overlayData.Remove());
             }
-            return AllSucceeded(futures);
+            return AllSucceeded(std::move(futures));
         }));
 
         return RemoveFuture_;
@@ -2472,12 +2476,12 @@ public:
 
         const auto& volumeId = GetId();
         const auto& volumePath = GetPath();
-        YT_LOG_DEBUG("Removing SquashFS volume (VolumeId: %v, VolumePath: %v)",
+        YT_LOG_DEBUG("Removing squashfs volume (VolumeId: %v, VolumePath: %v)",
             volumeId,
             volumePath);
 
         RemoveFuture_ = Location_->RemoveVolume(TagSet_, volumeId).Apply(BIND([volumeId = volumeId, volumePath = volumePath, volumeRemoveTimeGuard = std::move(volumeRemoveTimeGuard)]() {
-            YT_LOG_DEBUG("Removed SquashFS volume (VolumeId: %v, VolumePath: %v)",
+            YT_LOG_DEBUG("Removed squashfs volume (VolumeId: %v, VolumePath: %v)",
                 volumeId,
                 volumePath);
         }));
@@ -2585,11 +2589,11 @@ public:
                     CreatePortoExecutor(
                         Config_->VolumeManager->PortoExecutor,
                         Format("volume%v", index),
-                        ExecNodeProfiler.WithPrefix("/location_volumes/porto")),
+                        ExecNodeProfiler.WithPrefix("/location_volumes/porto").WithTag("location_id", id)),
                     CreatePortoExecutor(
                         Config_->VolumeManager->PortoExecutor,
                         Format("layer%v", index),
-                        ExecNodeProfiler.WithPrefix("/location_layers/porto")),
+                        ExecNodeProfiler.WithPrefix("/location_layers/porto").WithTag("location_id", id)),
                     id);
                 locations.push_back(location);
                 initLocationResults.push_back(location->Initialize());
@@ -2729,9 +2733,8 @@ public:
         // ToDo(psushin): choose proper invoker.
         // Avoid sync calls to WaitFor, to respect job preparation context switch guards.
         return AllSucceeded(std::move(overlayDataFutures))
-            .ToImmediatelyCancelable()
             .Apply(BIND([=, this_ = MakeStrong(this)] (const std::vector<TOverlayData>& overlayDataArray) {
-                auto tagSet = TVolumeProfilerCounters::MakeTagSet(/* volumeType */ "overlay", /* volumeFilePath */ "n/a");
+                auto tagSet = TVolumeProfilerCounters::MakeTagSet(/*volumeType*/ "overlay", /*volumeFilePath*/ "n/a");
                 TVolumeProfilerCounters::Get()->GetCounter(tagSet, "/created").Increment(1);
                 TEventTimerGuard volumeCreateTimeGuard(TVolumeProfilerCounters::Get()->GetTimer(tagSet, "/create_time"));
                 return this_->CreateOverlayVolume(tag, std::move(tagSet), std::move(volumeCreateTimeGuard), options, overlayDataArray);
@@ -2801,14 +2804,12 @@ private:
 
             auto nbdServer = Bootstrap_->GetNbdServer();
             if (!nbdServer) {
-                TVolumeProfilerCounters::Get()->GetCounter(tagSet, "/create_errors").Increment(1);
-
                 auto error = TError("NBD server is not present")
                     << TErrorAttribute("export_id", layer.nbd_export_id())
                     << TErrorAttribute("path", layer.data_source().path())
                     << TErrorAttribute("filesystem", FromProto<ELayerFilesystem>(layer.filesystem()));
-                YT_LOG_ERROR(error, "Failed to prepare NBD export");
-                return MakeFuture<void>(error);
+
+                THROW_ERROR(error);
             }
 
             // TODO(yuryalekseev): user
@@ -2817,18 +2818,28 @@ private:
 
             auto device = CreateCypressFileBlockDevice(
                 Bootstrap_->GetDynamicConfig()->ExecNode->Nbd,
+                Bootstrap_->GetDefaultInThrottler(),
+                Bootstrap_->GetReadRpsOutThrottler(),
                 layer,
                 std::move(client),
                 nbdServer->GetInvoker(),
                 nbdServer->GetLogger());
 
-            future = device->Initialize();
+            auto initializeFuture = device->Initialize();
             nbdServer->RegisterDevice(layer.nbd_export_id(), std::move(device));
+
+            future = initializeFuture.Apply(BIND([tag = tag, layer = layer, Logger = Logger] () {
+                YT_LOG_DEBUG("Prepared NBD export (Tag: %v, ExportId: %v, Path: %v, Filesystem: %v)",
+                    tag,
+                    layer.nbd_export_id(),
+                    layer.data_source().path(),
+                    FromProto<ELayerFilesystem>(layer.filesystem()));
+            }));
         } catch (const std::exception& ex) {
             TVolumeProfilerCounters::Get()->GetCounter(tagSet, "/create_errors").Increment(1);
 
             auto error = TError(ex);
-            YT_LOG_ERROR(error, "Failed to create and register NBD export");
+            YT_LOG_ERROR(error, "Failed to prepare NBD export");
             future = MakeFuture<void>(error);
         }
 
@@ -2879,7 +2890,7 @@ private:
             YT_VERIFY(artifactKey.has_filesystem());
             YT_VERIFY(artifactKey.has_nbd_export_id());
 
-            auto tagSet = TVolumeProfilerCounters::MakeTagSet(/* volumeType */ "nbd", /* volumeFilePath */ artifactKey.data_source().path());
+            auto tagSet = TVolumeProfilerCounters::MakeTagSet(/*volumeType*/ "nbd", /*volumeFilePath*/ artifactKey.data_source().path());
             TVolumeProfilerCounters::Get()->GetCounter(tagSet, "/created").Increment(1);
             TEventTimerGuard volumeCreateTimeGuard(TVolumeProfilerCounters::Get()->GetTimer(tagSet, "/create_time"));
 
@@ -2892,7 +2903,12 @@ private:
                 tag,
                 std::move(tagSet),
                 Passed(std::move(volumeCreateTimeGuard)),
-                artifactKey).AsyncVia(GetCurrentInvoker())).As<TOverlayData>();
+                artifactKey)
+            .AsyncVia(GetCurrentInvoker()))
+            // This uncancelable future ensures that TOverlayData object owning the volume will be created
+            // and protects from porto volume leak.
+            .ToUncancelable()
+            .As<TOverlayData>();
 
             futures.push_back(std::move(volumeFuture));
         }
@@ -2908,7 +2924,7 @@ private:
     {
         YT_VERIFY(!artifactKeys.empty());
 
-        YT_LOG_DEBUG("Prepare SquashFS volumes (Tag: %v, Artifacts: %v)",
+        YT_LOG_DEBUG("Prepare squashfs volumes (Tag: %v, Artifacts: %v)",
             tag,
             artifactKeys.size());
 
@@ -2923,7 +2939,7 @@ private:
             auto downloadFuture = ChunkCache_->DownloadArtifact(artifactKey, downloadOptions);
             auto volumeFuture = downloadFuture.Apply(
                 BIND([=, this_ = MakeStrong(this)] (const IVolumeArtifactPtr& chunkCacheArtifact) {
-                    auto tagSet = TVolumeProfilerCounters::MakeTagSet(/* volumeType */ "squashfs", /* volumeFilePath */ artifactKey.data_source().path());
+                    auto tagSet = TVolumeProfilerCounters::MakeTagSet(/*volumeType*/ "squashfs", /*volumeFilePath*/ artifactKey.data_source().path());
                     TVolumeProfilerCounters::Get()->GetCounter(tagSet, "/created").Increment(1);
                     TEventTimerGuard volumeCreateTimeGuard(TVolumeProfilerCounters::Get()->GetTimer(tagSet, "/create_time"));
 
@@ -2954,39 +2970,63 @@ private:
             artifactKey.data_source().path(),
             FromProto<ELayerFilesystem>(artifactKey.filesystem()));
 
-        auto nbdConfig = DynamicConfigManager_->GetConfig()->ExecNode->Nbd;
         auto nbdServer = Bootstrap_->GetNbdServer();
 
-        if (!nbdConfig || !nbdConfig->Enabled || !nbdServer) {
-            TVolumeProfilerCounters::Get()->GetCounter(tagSet, "/create_errors").Increment(1);
+        try {
+            auto nbdConfig = DynamicConfigManager_->GetConfig()->ExecNode->Nbd;
 
-            auto error = TError("NBD is not configured")
-                << TErrorAttribute("export_id", artifactKey.nbd_export_id())
-                << TErrorAttribute("path", artifactKey.data_source().path())
-                << TErrorAttribute("filesystem", FromProto<ELayerFilesystem>(artifactKey.filesystem()));
-            YT_LOG_ERROR(error, "Failed to create NBD volume");
-            THROW_ERROR_EXCEPTION(error);
+            if (!nbdConfig || !nbdConfig->Enabled || !nbdServer) {
+                TVolumeProfilerCounters::Get()->GetCounter(tagSet, "/create_errors").Increment(1);
+
+                auto error = TError("NBD is not configured")
+                    << TErrorAttribute("export_id", artifactKey.nbd_export_id())
+                    << TErrorAttribute("path", artifactKey.data_source().path())
+                    << TErrorAttribute("filesystem", FromProto<ELayerFilesystem>(artifactKey.filesystem()));
+
+                THROW_ERROR(error);
+            }
+
+            auto location = PickLocation();
+            auto volumeMetaFuture = location->CreateNbdVolume(tag, tagSet, std::move(volumeCreateTimeGuard), artifactKey, nbdConfig);
+            auto volumeFuture = volumeMetaFuture.ApplyUnique(BIND(
+                [
+                    tagSet = std::move(tagSet),
+                    artifactKey = artifactKey,
+                    location = std::move(location),
+                    nbdServer = nbdServer
+                ] (TVolumeMeta&& volumeMeta) {
+                return New<TNbdVolume>(
+                    std::move(tagSet),
+                    std::move(volumeMeta),
+                    artifactKey,
+                    std::move(location),
+                    std::move(nbdServer));
+            })).ToUncancelable();
+            // This uncancelable future ensures that TNbdVolume object owning the volume will be created
+            // and protects from porto volume leak.
+
+            auto volume = WaitFor(volumeFuture)
+                .ValueOrThrow();
+
+            YT_LOG_DEBUG("Created NBD volume (Tag: %v, VolumeId: %v, ExportId: %v, Path: %v, Filesytem: %v)",
+                tag,
+                volume->GetId(),
+                artifactKey.nbd_export_id(),
+                artifactKey.data_source().path(),
+                FromProto<ELayerFilesystem>(artifactKey.filesystem()));
+
+            return volume;
+        } catch (const std::exception& ex) {
+            YT_LOG_ERROR(ex, "Failed to create NBD volume (Tag: %v, ExportId: %v, Path: %v, Filesytem: %v)",
+                tag,
+                artifactKey.nbd_export_id(),
+                artifactKey.data_source().path(),
+                FromProto<ELayerFilesystem>(artifactKey.filesystem()));
+
+                nbdServer->TryUnregisterDevice(artifactKey.nbd_export_id());
+
+            throw;
         }
-
-        auto location = PickLocation();
-        auto volumeMeta = WaitFor(location->CreateNbdVolume(tag, tagSet, std::move(volumeCreateTimeGuard), artifactKey, nbdConfig))
-            .ValueOrThrow();
-
-        auto volume = New<TNbdVolume>(
-            std::move(tagSet),
-            std::move(volumeMeta),
-            artifactKey,
-            std::move(location),
-            std::move(nbdServer));
-
-        YT_LOG_INFO("Created NBD volume (Tag: %v, VolumeId: %v, ExportId: %v, Path: %v, Filesytem: %v)",
-            tag,
-            volume->GetId(),
-            artifactKey.nbd_export_id(),
-            artifactKey.data_source().path(),
-            FromProto<ELayerFilesystem>(artifactKey.filesystem()));
-
-        return volume;
     }
 
     TOverlayVolumePtr CreateOverlayVolume(
@@ -3000,7 +3040,7 @@ private:
             tag,
             overlayDataArray.size());
 
-        YT_LOG_DEBUG("Creating Overlay volume (Tag: %v, OverlayDataArraySize: %v)",
+        YT_LOG_DEBUG("Creating overlay volume (Tag: %v, OverlayDataArraySize: %v)",
             tag,
             overlayDataArray.size());
 
@@ -3008,27 +3048,37 @@ private:
             if (volumeOrLayer.IsLayer()) {
                 LayerCache_->Touch(volumeOrLayer.GetLayer());
 
-                YT_LOG_DEBUG("Using layer to create new Overlay volume (Tag: %v, LayerId: %v)",
+                YT_LOG_DEBUG("Using layer to create new overlay volume (Tag: %v, LayerId: %v)",
                     tag,
                     volumeOrLayer.GetLayer()->GetMeta().Id);
             } else {
-                YT_LOG_DEBUG("Using volume to create new Overlay volume (Tag: %v, VolumeId: %v)",
+                YT_LOG_DEBUG("Using volume to create new overlay volume (Tag: %v, VolumeId: %v)",
                     tag,
                     volumeOrLayer.GetVolume()->GetId());
             }
         }
 
         auto location = PickLocation();
-        auto volumeMeta = WaitFor(location->CreateOverlayVolume(tag, tagSet, std::move(volumeCreateTimeGuard), options, overlayDataArray))
+        auto volumeMetaFuture = location->CreateOverlayVolume(tag, tagSet, std::move(volumeCreateTimeGuard), options, overlayDataArray);
+        // This future is intentionally uncancellable: we don't want to interrupt invoked volume creation,
+        // until it is completed and the OverlayVolume object is fully created.
+        auto volumeFuture = volumeMetaFuture.ApplyUnique(BIND(
+            [
+                location = std::move(location),
+                tagSet = std::move(tagSet),
+                overlayDataArray = std::move(overlayDataArray)
+            ] (TVolumeMeta&& volumeMeta) {
+                return New<TOverlayVolume>(
+                    std::move(tagSet),
+                    std::move(volumeMeta),
+                    std::move(location),
+                    std::move(overlayDataArray));
+            })).ToUncancelable();
+
+        auto volume = WaitFor(volumeFuture)
             .ValueOrThrow();
 
-        auto volume = New<TOverlayVolume>(
-            std::move(tagSet),
-            std::move(volumeMeta),
-            std::move(location),
-            std::move(overlayDataArray));
-
-        YT_LOG_DEBUG("Created Overlay volume (Tag: %v, VolumeId: %v)",
+        YT_LOG_DEBUG("Created overlay volume (Tag: %v, VolumeId: %v)",
             tag,
             volume->GetId());
 
@@ -3044,22 +3094,33 @@ private:
     {
         auto squashFSFilePath = chunkCacheArtifact->GetFileName();
 
-        YT_LOG_DEBUG("Creating SquashFS volume (Tag: %v, SquashFSFilePath: %v)",
+        YT_LOG_DEBUG("Creating squashfs volume (Tag: %v, SquashFSFilePath: %v)",
             tag,
             squashFSFilePath);
 
         auto location = PickLocation();
-        auto volumeMeta = WaitFor(location->CreateSquashFSVolume(tag, tagSet, std::move(volumeCreateTimeGuard), artifactKey, squashFSFilePath))
+        auto volumeMetaFuture = location->CreateSquashFSVolume(tag, tagSet, std::move(volumeCreateTimeGuard), artifactKey, squashFSFilePath);
+        auto volumeFuture = volumeMetaFuture.ApplyUnique(BIND(
+            [
+                tagSet = std::move(tagSet),
+                artifactKey,
+                chunkCacheArtifact = std::move(chunkCacheArtifact),
+                location = std::move(location)
+            ] (TVolumeMeta&& volumeMeta) {
+            return New<TSquashFSVolume>(
+                std::move(tagSet),
+                std::move(volumeMeta),
+                artifactKey,
+                std::move(chunkCacheArtifact),
+                std::move(location));
+        })).ToUncancelable();
+        // This uncancelable future ensures that TSquashFSVolume object owning the volume will be created
+        // and protects from porto volume leak.
+
+        auto volume = WaitFor(volumeFuture)
             .ValueOrThrow();
 
-        auto volume = New<TSquashFSVolume>(
-            std::move(tagSet),
-            std::move(volumeMeta),
-            artifactKey,
-            std::move(chunkCacheArtifact),
-            std::move(location));
-
-        YT_LOG_INFO("Created SquashFS volume (Tag: %v, VolumeId: %v, SquashFSFilePath: %v)",
+        YT_LOG_INFO("Created squashfs volume (Tag: %v, VolumeId: %v, SquashFSFilePath: %v)",
             tag,
             volume->GetId(),
             squashFSFilePath);

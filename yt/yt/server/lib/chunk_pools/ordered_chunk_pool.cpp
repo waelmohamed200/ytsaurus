@@ -423,7 +423,6 @@ private:
         auto dataSliceCopy = CreateInputDataSlice(dataSlice);
         dataSliceCopy->Tag = cookie;
         CurrentJob()->AddDataSlice(dataSliceCopy, cookie, /*isPrimary*/ true);
-
         return result;
     }
 

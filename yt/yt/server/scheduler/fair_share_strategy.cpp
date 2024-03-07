@@ -617,7 +617,7 @@ public:
             const auto& newPool = GetOrCrash(newPools, treeId);
             auto tree = GetTree(treeId);
             if (oldPool.GetPool() != newPool.GetPool()) {
-                tree->ChangeOperationPool(operation->GetId(), newPool);
+                tree->ChangeOperationPool(operation->GetId(), newPool, /*ensureRunning*/ true);
             }
 
             const auto& treeParams = GetOrCrash(runtimeParameters->SchedulingOptionsPerPoolTree, treeId);
@@ -736,15 +736,16 @@ public:
         }
     }
 
-    void ValidatePoolLimits(
+    void ValidatePoolLimitsOnPoolChange(
         IOperationStrategyHost* operation,
         const TOperationRuntimeParametersPtr& runtimeParameters) override
     {
-        ValidateMaxRunningOperationsCountOnPoolChange(operation, runtimeParameters);
+        VERIFY_INVOKERS_AFFINITY(FeasibleInvokers_);
 
-        auto poolLimitViolations = GetPoolLimitViolations(operation, runtimeParameters);
-        if (!poolLimitViolations.empty()) {
-            THROW_ERROR poolLimitViolations.begin()->second;
+        auto pools = GetOperationPools(runtimeParameters);
+        for (const auto& [treeId, pool] : pools) {
+            auto tree = GetTree(treeId);
+            tree->ValidatePoolLimitsOnPoolChange(operation, pool);
         }
     }
 
@@ -847,20 +848,6 @@ public:
         }
 
         return result;
-    }
-
-    virtual void ValidateMaxRunningOperationsCountOnPoolChange(
-        const IOperationStrategyHost* operation,
-        const TOperationRuntimeParametersPtr& runtimeParameters)
-    {
-        VERIFY_INVOKERS_AFFINITY(FeasibleInvokers_);
-
-        auto pools = GetOperationPools(runtimeParameters);
-
-        for (const auto& [treeId, pool] : pools) {
-            auto tree = GetTree(treeId);
-            tree->ValidatePoolLimitsOnPoolChange(operation, pool);
-        }
     }
 
     void OnFairShareProfilingAt(TInstant /*now*/) override
@@ -1323,6 +1310,10 @@ public:
             auto tree = GetTree(treeId);
             tree->OnOperationMaterialized(operationId);
 
+            if (auto error = tree->CheckOperationNecessaryResourceDemand(operationId); !error.IsOK()) {
+                return error;
+            }
+
             if (auto error = tree->CheckOperationSchedulingInSeveralTreesAllowed(operationId); !error.IsOK()) {
                 multiTreeSchedulingErrors.push_back(TError("Scheduling in several trees is forbidden by %Qlv tree's configuration")
                     << std::move(error));
@@ -1755,7 +1746,7 @@ private:
         }
 
         if (matchedTemplateConfigs.empty()) {
-            return ParsePoolTreeConfig(poolTreeAttributes, /* commonConfig */ nullptr);
+            return ParsePoolTreeConfig(poolTreeAttributes, /*commonConfig*/ nullptr);
         }
 
         std::sort(
@@ -1784,7 +1775,7 @@ private:
             if (IdToTree_.find(key) == IdToTree_.end()) {
                 treesToAdd->insert(key);
                 try {
-                    auto config = ParsePoolTreeConfig(poolsMap->FindChild(key), /* commonConfig */ nullptr);
+                    auto config = ParsePoolTreeConfig(poolsMap->FindChild(key), /*commonConfig*/ nullptr);
                     treeIdToFilter->emplace(key, config->NodesFilter);
                 } catch (const std::exception&) {
                     // Do nothing, alert will be set later.
@@ -1801,7 +1792,7 @@ private:
             }
 
             try {
-                auto config = ParsePoolTreeConfig(child, /* commonConfig */ nullptr);
+                auto config = ParsePoolTreeConfig(child, /*commonConfig*/ nullptr);
                 treeIdToFilter->emplace(treeId, config->NodesFilter);
 
                 if (config->NodesFilter != tree->GetNodesFilter()) {

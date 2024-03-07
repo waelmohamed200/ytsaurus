@@ -404,8 +404,8 @@ class UserJobSpecBuilder(object):
         return _set_spec_value(self, "layer_paths", paths)
 
     @spec_option("Docker image for root fs layer")
-    def docker_image(self, paths):
-        return _set_spec_value(self, "docker_image", paths)
+    def docker_image(self, docker_image):
+        return _set_spec_value(self, "docker_image", docker_image)
 
     @spec_option("The format of tabular data")
     def format(self, format):
@@ -755,7 +755,7 @@ class UserJobSpecBuilder(object):
 
         if "command" not in spec and not requires_command:
             return None
-        require(self._spec.get("command") is not None, lambda: YtError("You should specify job command"))
+        require(spec.get("command") is not None, lambda: YtError("You should specify job command"))
 
         command = spec["command"]
 

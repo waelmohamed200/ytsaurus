@@ -388,6 +388,7 @@ public:
         , MediumMap_(TEntityMapTypeTraits<TMedium>(Bootstrap_))
     {
         RegisterMethod(BIND(&TChunkManager::HydraConfirmChunkListsRequisitionTraverseFinished, Unretained(this)));
+        RegisterMethod(BIND(&TChunkManager::HydraRescheduleChunkListRequisitionTraversals, Unretained(this)));
         RegisterMethod(BIND(&TChunkManager::HydraUpdateChunkRequisition, Unretained(this)));
         RegisterMethod(BIND(&TChunkManager::HydraRegisterChunkEndorsements, Unretained(this)));
         RegisterMethod(BIND(&TChunkManager::HydraScheduleChunkRequisitionUpdates, Unretained(this)));
@@ -586,6 +587,16 @@ public:
             Bootstrap_->GetHydraFacade()->GetHydraManager(),
             request,
             &TChunkManager::HydraConfirmChunkListsRequisitionTraverseFinished,
+            this);
+    }
+
+    std::unique_ptr<TMutation> CreateRescheduleChunkListRequisitionTraversalsMutation(
+        const NProto::TReqRescheduleChunkListRequisitionTraversals& request) override
+    {
+        return CreateMutation(
+            Bootstrap_->GetHydraFacade()->GetHydraManager(),
+            request,
+            &TChunkManager::HydraRescheduleChunkListRequisitionTraversals,
             this);
     }
 
@@ -914,12 +925,11 @@ public:
             return;
         }
 
-        if (GetDynamicConfig()->EnableChunkSchemas && schemaId != NullTableSchemaId) {
-            const auto& tableManager = Bootstrap_->GetTableManager();
-            // TODO(h0pless): Maybe think of a better exception here.
-            auto* temporarySchema = tableManager->GetMasterTableSchemaOrThrow(schemaId);
-            tableManager->GetOrCreateNativeMasterTableSchema(*temporarySchema->AsTableSchema(), chunk);
-        }
+        const auto& tableManager = Bootstrap_->GetTableManager();
+        // TODO(h0pless): Maybe think of a better exception here.
+        auto* temporarySchema = GetDynamicConfig()->EnableChunkSchemas && schemaId != NullTableSchemaId
+            ? tableManager->GetMasterTableSchemaOrThrow(schemaId)
+            : nullptr;
 
         // NB: Figure out and validate all hunk chunks we are about to reference _before_ confirming
         // the chunk and storing its meta. Otherwise, in DestroyChunk one may end up having
@@ -945,6 +955,10 @@ public:
         }
 
         chunk->Confirm(chunkInfo, chunkMeta);
+
+        if (temporarySchema) {
+            tableManager->GetOrCreateNativeMasterTableSchema(*temporarySchema->AsTableSchema(), chunk);
+        }
 
         UpdateChunkWeightStatisticsHistogram(chunk, /*add*/ true);
 
@@ -1122,8 +1136,8 @@ public:
         TChunkRequisition requisition(
             account,
             mediumIndex,
-            TReplicationPolicy(replicationFactor, false /* dataPartsOnly */),
-            false /* committed */);
+            TReplicationPolicy(replicationFactor, false /*dataPartsOnly*/),
+            false /*committed*/);
         requisition.SetVital(vital);
         const auto& objectManager = Bootstrap_->GetObjectManager();
         auto requisitionIndex = ChunkRequisitionRegistry_.GetOrCreate(requisition, objectManager);
@@ -1261,7 +1275,16 @@ public:
             ConsistentChunkPlacement_->RemoveChunk(chunk);
         }
 
-        UpdateChunkSchemaMasterMemoryUsage(chunk, -1);
+        // Just a sanity check.
+        if (chunk->IsConfirmed()) {
+            UpdateChunkSchemaMasterMemoryUsage(chunk, -1);
+        } else if (chunk->Schema()) {
+            // This can be safely removed after 24.1 rolls around if this alert is not triggered.
+            YT_LOG_ALERT("Destroying an unconfirmed chunk with a valid chunk schema (ChunkId: %v, SchemaId: %v)",
+                chunk->GetId(),
+                chunk->Schema()->GetId());
+        }
+
         if (chunk->IsNative() && chunk->IsDiskSizeFinal()) {
             // The chunk has been already unstaged.
             UpdateResourceUsage(chunk, -1);
@@ -2031,6 +2054,22 @@ public:
         ChunkReplicator_->ScheduleRequisitionUpdate(chunkList);
     }
 
+    void RescheduleChunkListRequisitionTraversals() override
+    {
+        if (ChunkListsAwaitingRequisitionTraverse_.empty()) {
+            return;
+        }
+
+        NProto::TReqRescheduleChunkListRequisitionTraversals request;
+        for (const auto& chunkList : ChunkListsAwaitingRequisitionTraverse_) {
+            ToProto(request.add_chunk_list_ids(), chunkList->GetId());
+        }
+
+        auto mutation = CreateRescheduleChunkListRequisitionTraversalsMutation(request);
+        mutation->SetAllowLeaderForwarding(true);
+        YT_UNUSED_FUTURE(mutation->CommitAndLog(Logger));
+    }
+
     void ScheduleChunkRequisitionUpdate(TChunk* chunk)
     {
         YT_VERIFY(HasMutationContext());
@@ -2531,6 +2570,8 @@ private:
 
     TPeriodicExecutorPtr SequoiaReplicaRemovalExecutor_;
     THashMap<TChunkId, TCompactVector<TSequoiaChunkReplica, 3>> SequoiaChunkPurgatory_;
+    // Transient.
+    bool ChunksBeingPurged_ = false;
 
     NHydra::TEntityMap<TChunk> ChunkMap_;
     NHydra::TEntityMap<TChunkView> ChunkViewMap_;
@@ -2744,17 +2785,28 @@ private:
         return replicas;
     }
 
-    virtual THashMap<TChunkId, TErrorOr<TChunkLocationPtrWithReplicaInfoList>> GetChunkReplicas(const std::vector<TEphemeralObjectPtr<TChunk>>& chunks) const override
+    virtual TErrorOr<TChunkLocationPtrWithReplicaInfoList> GetSequoiaChunkReplicas(const TEphemeralObjectPtr<TChunk>& chunk) const override
     {
         YT_VERIFY(!HasMutationContext());
 
-        const auto& config = GetDynamicConfig();
+        std::vector<TEphemeralObjectPtr<TChunk>> chunks;
+        chunks.emplace_back(chunk.Get());
+        auto result = GetSequoiaChunkReplicas(chunks);
+        return GetOrCrash(result, chunk->GetId());
+    }
+
+    virtual THashMap<TChunkId, TErrorOr<TChunkLocationPtrWithReplicaInfoList>> GetSequoiaChunkReplicas(const std::vector<TEphemeralObjectPtr<TChunk>>& chunks) const override
+    {
+        YT_VERIFY(!HasMutationContext());
+
+        auto config = GetDynamicConfig();
 
         THashMap<TChunkId, TErrorOr<TChunkLocationPtrWithReplicaInfoList>> result;
 
         std::vector<TChunkId> sequoiaChunkIds;
         for (const auto& chunk : chunks) {
             auto chunkId = chunk->GetId();
+            result[chunkId] = {};
             if (config->FetchReplicasFromSequoia && CanHaveSequoiaReplicas(chunkId)) {
                 sequoiaChunkIds.push_back(chunkId);
             }
@@ -2787,6 +2839,14 @@ private:
                 }
             }
         }
+        return result;
+    }
+
+    virtual THashMap<TChunkId, TErrorOr<TChunkLocationPtrWithReplicaInfoList>> GetChunkReplicas(const std::vector<TEphemeralObjectPtr<TChunk>>& chunks) const override
+    {
+        YT_VERIFY(!HasMutationContext());
+
+        auto result = GetSequoiaChunkReplicas(chunks);
 
         for (const auto& chunk : chunks) {
             auto masterReplicas = chunk->StoredReplicas();
@@ -2848,10 +2908,12 @@ private:
         return Bootstrap_
             ->GetSequoiaClient()
             ->SelectRows<NRecords::TLocationReplicas>({
-                Format("cell_tag = %v", Bootstrap_->GetCellTag()),
-                Format("node_id = %v", nodeId),
-                Format("id_hash = %v", HashFromId(locationUuid)),
-                Format("location_uuid = %Qv", locationUuid),
+                .Where = {
+                    Format("cell_tag = %v", Bootstrap_->GetCellTag()),
+                    Format("node_id = %v", nodeId),
+                    Format("id_hash = %v", HashFromId(locationUuid)),
+                    Format("location_uuid = %Qv", locationUuid)
+                }
             });
     }
 
@@ -2867,8 +2929,10 @@ private:
         return Bootstrap_
             ->GetSequoiaClient()
             ->SelectRows<NRecords::TLocationReplicas>({
-                Format("cell_tag = %v", Bootstrap_->GetCellTag()),
-                Format("node_id = %v", nodeId),
+                .Where = {
+                    Format("cell_tag = %v", Bootstrap_->GetCellTag()),
+                    Format("node_id = %v", nodeId)
+                }
             });
     }
 
@@ -4005,20 +4069,38 @@ private:
 
         for (auto chunkListId : chunkListIds) {
             auto* chunkList = FindChunkList(chunkListId);
-            if (!chunkList) {
-                YT_LOG_ALERT("Chunk list is missing during requisition traverse finish confirmation (ChunkListId: %v)",
+            if (!IsObjectAlive(chunkList)) {
+                YT_LOG_DEBUG("Chunk list is missing during requisition traverse finish confirmation (ChunkListId: %v)",
                     chunkListId);
                 continue;
             }
 
             auto it = ChunkListsAwaitingRequisitionTraverse_.find(chunkList);
             if (it == ChunkListsAwaitingRequisitionTraverse_.end()) {
-                YT_LOG_ALERT("Chunk list does not hold an additional strong ref during requisition traverse finish confirmation (ChunkListId: %v)",
+                YT_LOG_DEBUG("Chunk list does not hold an additional strong ref during requisition traverse finish confirmation (ChunkListId: %v)",
                     chunkListId);
                 continue;
             }
 
             ChunkListsAwaitingRequisitionTraverse_.erase(it);
+        }
+    }
+
+    void HydraRescheduleChunkListRequisitionTraversals(NProto::TReqRescheduleChunkListRequisitionTraversals* request)
+    {
+        auto chunkListsIds = FromProto<std::vector<TChunkListId>>(request->chunk_list_ids());
+
+        YT_LOG_DEBUG("Rescheduling chunk lists requisition traversal (ChunkListIds: %v)",
+            MakeShrunkFormattableView(
+                chunkListsIds,
+                [] (TStringBuilderBase* builder, TChunkListId chunkListId) {
+                    builder->AppendFormat("%v", chunkListId);
+                },
+                /*limit*/ 10));
+
+        for (const auto& protoChunkListId : request->chunk_list_ids()) {
+            auto chunkListId = FromProto<TChunkListId>(protoChunkListId);
+            ChunkReplicator_->ScheduleRequisitionUpdate(FindChunkList(chunkListId));
         }
     }
 
@@ -4823,8 +4905,7 @@ private:
                         TChunkViewModifier().WithTransactionId(transactionId));
                     children.push_back(chunkView);
                 } else {
-                    // Remote copy. Inserted chunks preserve original timestamps.
-                    YT_VERIFY(parent->GetKind() == EChunkListKind::SortedDynamicTablet);
+                    // Remote copy or bulk insert with output_timestamp. Inserted chunks preserve original timestamps.
                     children.push_back(child);
                 }
             } else {
@@ -5390,8 +5471,6 @@ private:
 
         OnEpochStarted();
 
-        ChunkReplicator_->OnLeadingStarted();
-
         ChunkSealer_->Start();
 
         {
@@ -5420,8 +5499,6 @@ private:
         TMasterAutomatonPart::OnStopLeading();
 
         OnEpochFinished();
-
-        ChunkReplicator_->OnLeadingFinished();
 
         ChunkSealer_->Stop();
 
@@ -5457,6 +5534,8 @@ private:
         ChunkPlacement_->Clear();
 
         ChunkReplicator_->OnEpochFinished();
+
+        ChunksBeingPurged_ = false;
     }
 
     void RegisterChunk(TChunk* chunk)
@@ -5530,12 +5609,14 @@ private:
         return Bootstrap_
             ->GetSequoiaClient()
             ->SelectRows<NRecords::TChunkReplicas>({
-                buildFilter("id_hash", [] (TStringBuilderBase* builder, TChunkId chunkId) {
-                    builder->AppendFormat("%v", HashFromId(chunkId));
-                }),
-                buildFilter("chunk_id", [] (TStringBuilderBase* builder, TChunkId chunkId) {
-                    builder->AppendFormat("%Qv", chunkId);
-                }),
+                .Where = {
+                    buildFilter("id_hash", [] (TStringBuilderBase* builder, TChunkId chunkId) {
+                        builder->AppendFormat("%v", HashFromId(chunkId));
+                    }),
+                    buildFilter("chunk_id", [] (TStringBuilderBase* builder, TChunkId chunkId) {
+                        builder->AppendFormat("%Qv", chunkId);
+                    })
+                },
             }).Apply(BIND([] (const std::vector<NRecords::TChunkReplicas>& replicaRecords) {
                 std::vector<TSequoiaChunkReplica> replicas;
                 for (const auto& replicaRecord : replicaRecords) {
@@ -5566,7 +5647,11 @@ private:
             return;
         }
 
-        const auto& config = GetDynamicConfig();
+        if (ChunksBeingPurged_) {
+            return;
+        }
+
+        auto config = GetDynamicConfig();
 
         std::vector<TChunkId> chunkIds;
         chunkIds.reserve(std::min<ssize_t>(std::ssize(SequoiaChunkPurgatory_), config->SequoiaReplicaRemovalBatchSize));
@@ -5589,7 +5674,12 @@ private:
         }
 
         ToProto(request.mutable_chunk_ids(), chunkIds);
-        Y_UNUSED(WaitFor(RemoveDeadSequoiaChunkReplicas(request)));
+
+        ChunksBeingPurged_ = true;
+        auto result = WaitFor(RemoveDeadSequoiaChunkReplicas(request));
+        if (!result.IsOK()) {
+            YT_LOG_DEBUG(result, "Error purging dead Sequoia chunks");
+        }
     }
 
     virtual TFuture<void> RemoveDeadSequoiaChunkReplicas(const NProto::TReqRemoveDeadSequoiaChunkReplicas& request)
@@ -5654,6 +5744,7 @@ private:
             replicasToPurge[replica.ChunkId].push_back(replica);
         }
 
+        const auto& nodeTracker = Bootstrap_->GetNodeTracker();
         const auto& dataNodeTracker = Bootstrap_->GetDataNodeTracker();
         for (auto& [chunkId, replicas] : replicasToPurge) {
             SortUniqueBy(replicas, [] (const auto& replica) {
@@ -5661,8 +5752,15 @@ private:
             });
 
             for (const auto& replica : replicas) {
-                auto locationUuid = replica.LocationUuid;
+                auto* node = nodeTracker->FindNode(replica.NodeId);
+                if (!IsObjectAlive(node)) {
+                    YT_LOG_ALERT("Trying to remove a replica from a nonexistent node (NodeId: %v, ChunkId: %v)",
+                        replica.NodeId,
+                        chunkId);
+                    continue;
+                }
 
+                auto locationUuid = replica.LocationUuid;
                 auto* location = dataNodeTracker->FindChunkLocationByUuid(locationUuid);
                 if (!IsObjectAlive(location)) {
                     YT_LOG_ALERT("Trying to remove a replica from a nonexistent location (LocationUuid: %v, ChunkId: %v)",
@@ -5682,11 +5780,26 @@ private:
                     }
                 }
 
+                auto nodeState = node->GetLocalState();
+                // If node is offline or being disposed, we might have already cleared the corresponding location and
+                // adding destroyed replica there again will just get it stuck there.
+
+                // If node is registered, she will tell us about her replicas with full heartbeat (including that one),
+                // and we will add it to destroyed set at that moment (we should not add it now, because if node goes back offline
+                // before reporting heartbeat, the replica will get stuck as well).
+                if (nodeState != ENodeState::Online) {
+                    YT_LOG_DEBUG("Skip adding replica to destroyed set as node is not online (NodeId: %v, State: %v, ChunkId: %v)",
+                        replica.NodeId,
+                        nodeState,
+                        chunkId);
+                    continue;
+                }
+
                 TChunkIdWithIndex chunkIdWithIndexes(chunkId, replicaIndex);
                 if (location->AddDestroyedReplica(chunkIdWithIndexes)) {
                     ++DestroyedReplicaCount_;
                 } else {
-                    YT_LOG_INFO("Replica is already present in destroyed set (LocationUuid: %v, ChunkId: %v)",
+                    YT_LOG_DEBUG("Replica is already present in destroyed set (LocationUuid: %v, ChunkId: %v)",
                         locationUuid,
                         chunkId);
                 }
@@ -5696,6 +5809,8 @@ private:
         for (auto& [chunkId, replicas] : replicasToPurge) {
             EraseOrCrash(SequoiaChunkPurgatory_, chunkId);
         }
+
+        ChunksBeingPurged_ = false;
     }
 
     void AddChunkReplica(

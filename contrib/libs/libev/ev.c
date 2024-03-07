@@ -3078,7 +3078,7 @@ evtimerfd_init (EV_P)
 /*****************************************************************************/
 
 #if EV_USE_IOCP
-# include "ev_iocp.c"
+# error #include "ev_iocp.c"
 #endif
 #if EV_USE_PORT
 # error #include "ev_port.c"
@@ -3749,6 +3749,14 @@ ev_pending_count (EV_P) EV_NOEXCEPT
     count += pendingcnt [pri];
 
   return count;
+}
+
+void
+ev_set_io_pessimistic_remove (EV_P) EV_NOEXCEPT
+{
+#if EV_USE_EPOLL || EV_GENWRAP
+  epoll_pessimistic_remove = 1;
+#endif
 }
 
 ecb_noinline

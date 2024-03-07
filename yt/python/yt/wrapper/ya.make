@@ -36,7 +36,6 @@ IF (OPENSOURCE)
 ELSE()
     PEERDIR(
         yt/python/contrib/python-chardet
-        library/python/resource
         library/python/svn_version
         library/python/oauth
     )
@@ -94,6 +93,7 @@ SET(SRCS
     etc_commands.py
     exceptions_catcher.py
     file_commands.py
+    flow_commands.py
     format.py
     framing.py
     heavy_commands.py

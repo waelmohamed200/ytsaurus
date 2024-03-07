@@ -50,8 +50,12 @@
 #include <yt/yt/ytlib/job_proxy/config.h>
 #include <yt/yt/ytlib/job_proxy/job_spec_helper.h>
 
+#include <yt/yt/ytlib/hive/cluster_directory_synchronizer.h>
+
 #include <yt/yt/ytlib/node_tracker_client/helpers.h>
 #include <yt/yt/ytlib/node_tracker_client/node_directory_synchronizer.h>
+
+#include <yt/yt/ytlib/queue_client/registration_manager.h>
 
 #include <yt/yt/library/auth/credentials_injecting_channel.h>
 
@@ -337,7 +341,7 @@ void TJobProxy::LogJobSpec(TJobSpec jobSpec)
         {
             TStringBuilder builder;
             for (const auto& tableSpec : *inputTableSpecs) {
-                builder.AppendString(tableSpec.DebugString());
+                builder.AppendString(tableSpec.ShortDebugString());
                 builder.AppendChar('\n');
             }
             YT_LOG_DEBUG("Job spec %v input table specs:\n%v",
@@ -370,7 +374,7 @@ static NTableClient::TTableSchemaPtr SetStableNames(
         auto& column = columns.emplace_back(originalColumn);
         YT_VERIFY(!column.IsRenamed());
         if (auto it = nameToStableName.find(column.Name())) {
-            column.SetStableName(NTableClient::TStableName(it->second));
+            column.SetStableName(NTableClient::TColumnStableName(it->second));
         }
     }
     return New<NTableClient::TTableSchema>(
@@ -675,7 +679,9 @@ void TJobProxy::EnableRpcProxyInJobProxy(int rpcProxyWorkerThreadPoolSize)
     YT_VERIFY(Config_->OriginalClusterConnection);
     NLogging::TLogger proxyLogger("RpcProxy");
     auto connection = CreateNativeConnection(Config_->OriginalClusterConnection);
+    connection->GetClusterDirectorySynchronizer()->Start();
     connection->GetNodeDirectorySynchronizer()->Start();
+    connection->GetQueueConsumerRegistrationManager()->StartSync();
     auto rootClient = connection->CreateNativeClient(TClientOptions::FromUser(NSecurityClient::RootUserName));
 
     auto proxyCoordinator = CreateProxyCoordinator();
@@ -1379,7 +1385,7 @@ void TJobProxy::CheckMemoryUsage()
                 "(JobProxyMaxMemoryUsage: %v, JobProxyMemoryReserve: %v, RefCountedTracker: %v)",
                 usage,
                 JobProxyMemoryReserve_,
-                TRefCountedTracker::Get()->GetDebugInfo(2 /* sortByColumn */));
+                TRefCountedTracker::Get()->GetDebugInfo(2 /*sortByColumn*/));
             LastRefCountedTrackerLogTime_ = TInstant::Now();
             LastLoggedJobProxyMaxMemoryUsage_ = usage;
         }
@@ -1391,7 +1397,7 @@ void TJobProxy::CheckMemoryUsage()
             jobProxyMemoryUsage,
             JobProxyMemoryReserve_,
             JobProxyMemoryOvercommitLimit_,
-            TRefCountedTracker::Get()->GetDebugInfo(2 /* sortByColumn */));
+            TRefCountedTracker::Get()->GetDebugInfo(2 /*sortByColumn*/));
     }
 
     i64 totalMemoryUsage = UserJobCurrentMemoryUsage_ + jobProxyMemoryUsage;

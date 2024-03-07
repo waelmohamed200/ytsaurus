@@ -1,4 +1,5 @@
 RECURSE(
+    admin
     yt
     chyt
     yql
@@ -13,6 +14,7 @@ RECURSE(
     spark/spark-over-yt
     styleguide
     systest
+    admin
 )
 
 
@@ -20,7 +22,6 @@ IF (NOT OPENSOURCE)
     # Yandex-specific parts of YT.
     RECURSE(
         abcdapter
-        admin
         benchmarks
         buildall
         cfg

@@ -332,8 +332,8 @@ public:
         REGISTER_ALL(TSuspendTabletCellsCommand,           "suspend_tablet_cells",            Null,       Structured, false,  false);
         REGISTER_ALL(TResumeTabletCellsCommand,            "resume_tablet_cells",             Null,       Structured, false,  false);
 
-        REGISTER_ALL(TAddMaintenanceCommand,               "add_maintenance",                 Null,       Structured, true,   false);
-        REGISTER_ALL(TRemoveMaintenanceCommand,            "remove_maintenance",              Null,       Structured, true,   false);
+        REGISTER    (TAddMaintenanceCommand,               "add_maintenance",                 Null,       Structured, true,   false, ApiVersion4);
+        REGISTER    (TRemoveMaintenanceCommand,            "remove_maintenance",              Null,       Structured, true,   false, ApiVersion4);
         REGISTER_ALL(TDisableChunkLocationsCommand,        "disable_chunk_locations",         Null,       Structured, false,  false);
         REGISTER_ALL(TDestroyChunkLocationsCommand,        "destroy_chunk_locations",         Null,       Structured, false,  false);
         REGISTER_ALL(TResurrectChunkLocationsCommand,      "resurrect_chunk_locations",       Null,       Structured, false,  false);
@@ -364,11 +364,11 @@ public:
         REGISTER_ALL(TSetBundleConfigCommand,              "set_bundle_config",               Structured, Null,       false,  false);
 
         REGISTER    (TGetPipelineSpecCommand,              "get_pipeline_spec",               Null,       Structured, true,   false, ApiVersion4);
-        REGISTER    (TSetPipelineSpecCommand,              "set_pipeline_spec",               Structured, Null,       true,   false, ApiVersion4);
-        REGISTER    (TRemovePipelineDynamicSpecCommand,    "remove_pipeline_spec",            Null,       Null,       true,   false, ApiVersion4);
+        REGISTER    (TSetPipelineSpecCommand,              "set_pipeline_spec",               Structured, Structured, true,   false, ApiVersion4);
+        REGISTER    (TRemovePipelineSpecCommand,           "remove_pipeline_spec",            Null,       Structured, true,   false, ApiVersion4);
         REGISTER    (TGetPipelineDynamicSpecCommand,       "get_pipeline_dynamic_spec",       Null,       Structured, true,   false, ApiVersion4);
-        REGISTER    (TSetPipelineDynamicSpecCommand,       "set_pipeline_dynamic_spec",       Structured, Null,       true,   false, ApiVersion4);
-        REGISTER    (TRemovePipelineDynamicSpecCommand,    "remove_pipeline_dynamic_spec",    Null,       Null,       true,   false, ApiVersion4);
+        REGISTER    (TSetPipelineDynamicSpecCommand,       "set_pipeline_dynamic_spec",       Structured, Structured, true,   false, ApiVersion4);
+        REGISTER    (TRemovePipelineDynamicSpecCommand,    "remove_pipeline_dynamic_spec",    Null,       Structured, true,   false, ApiVersion4);
         REGISTER    (TStartPipelineCommand,                "start_pipeline",                  Null,       Structured, false,  false, ApiVersion4);
         REGISTER    (TStopPipelineCommand,                 "stop_pipeline",                   Null,       Structured, false,  false, ApiVersion4);
         REGISTER    (TPausePipelineCommand,                "pause_pipeline",                  Null,       Structured, false,  false, ApiVersion4);

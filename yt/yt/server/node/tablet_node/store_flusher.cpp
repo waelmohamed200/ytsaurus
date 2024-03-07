@@ -125,8 +125,7 @@ public:
             Config_->StoreFlusher->MaxConcurrentFlushes,
             Profiler_.Gauge("/running_store_flushes")))
         , Orchid_(New<TFlushOrchid>(
-            Bootstrap_->GetDynamicConfigManager()->GetConfig()->TabletNode->StoreFlusher->Orchid->MaxFailedTaskCount,
-            Bootstrap_->GetDynamicConfigManager()->GetConfig()->TabletNode->StoreFlusher->Orchid->MaxCompletedTaskCount))
+            Bootstrap_->GetDynamicConfigManager()->GetConfig()->TabletNode->StoreFlusher->Orchid))
         , OrchidService_(CreateOrchidService())
     {
         const auto& dynamicConfigManager = Bootstrap_->GetDynamicConfigManager();
@@ -181,7 +180,7 @@ private:
     }
 
     void OnDynamicConfigChanged(
-        const NClusterNode::TClusterNodeDynamicConfigPtr& /* oldNodeConfig */,
+        const NClusterNode::TClusterNodeDynamicConfigPtr& /*oldNodeConfig*/,
         const NClusterNode::TClusterNodeDynamicConfigPtr& newNodeConfig)
     {
         const auto& config = newNodeConfig->TabletNode->StoreFlusher;

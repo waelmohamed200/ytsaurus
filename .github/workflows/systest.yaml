@@ -2,7 +2,7 @@ name: Systest
 
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */12 * * *'
 
 jobs:
   start-vm:
@@ -44,6 +44,8 @@ jobs:
       - checkout
 
     runs-on: ${{ needs.start-vm.outputs.label }}
+    timeout-minutes: 720
+
     steps:
       - name: Kube cluster get credentials
         shell: bash

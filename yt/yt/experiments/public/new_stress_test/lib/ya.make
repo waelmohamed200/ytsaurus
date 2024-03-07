@@ -17,6 +17,7 @@ PY_SRCS(
     __init__.py
     aggregate.py
     create_data.py
+    group_by.py
     helpers.py
     job_base.py
     logger.py
@@ -38,6 +39,13 @@ PY_SRCS(
     test_sorted.py
     verify.py
     write_data.py
+
+    ql_base.py
+    ql_checks.py
+    ql_engine.py
+    ql_generator.py
+    ql_printer.py
+    ql_util.py
 )
 
 END()

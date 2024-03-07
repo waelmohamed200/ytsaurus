@@ -10,6 +10,8 @@
 
 #include <yt/yt/server/lib/scheduler/job_metrics.h>
 
+#include <yt/yt/ytlib/scheduler/config.h>
+
 #include <yt/yt/ytlib/chunk_client/config.h>
 
 #include <yt/yt/ytlib/api/native/public.h>
@@ -341,6 +343,11 @@ public:
 
     double CpuLimitOvercommitMultiplier;
     double InitialCpuLimitOvercommit;
+
+    //! Enforce slot container memory limit.
+    bool SetSlotContainerMemoryLimit;
+
+    i64 SlotContainerMemoryOverhead;
 
     //! Number of simultaneously building job specs after which controller starts throttling.
     std::optional<int> ControllerBuildingJobSpecCountLimit;
@@ -1164,6 +1171,9 @@ public:
     //! Enables job profiling.
     bool EnableJobProfiling;
 
+    std::optional<TString> CudaProfilerLayerPath;
+    NScheduler::TCudaProfilerEnvironmentPtr CudaProfilerEnvironment;
+
     int MaxRunningJobStatisticsUpdateCountPerHeartbeat;
     TDuration RunningAllocationTimeStatisticsUpdatesSendPeriod;
 
@@ -1180,6 +1190,8 @@ public:
 
     // COMPAT(kvk1920): Remove after all masters will be >= 23.3.
     bool CommitOperationCypressNodeChangesViaSystemTransaction;
+
+    NRpc::TServerDynamicConfigPtr RpcServer;
 
     REGISTER_YSON_STRUCT(TControllerAgentConfig);
 

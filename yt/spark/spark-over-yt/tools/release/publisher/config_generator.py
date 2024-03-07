@@ -24,7 +24,7 @@ def write_config(config: Dict, conf_file: str):
 YTSERVER_PROXY = "//sys/bin/ytserver-proxy/ytserver-proxy"
 
 LAUNCH_CONFIG = {
-    'spark_conf': {"spark.yt.jarCaching": "true"},
+    'spark_conf': {},
     'environment': {}
 }
 GLOBAL_CONFIG = {
@@ -82,7 +82,6 @@ def get_file_paths(conf_local_dir: str, root_path: str, versions: Versions) -> L
         f"{root_path}/{spyt_remote_dir(versions)}/spark.tgz",
         f"{root_path}/{spyt_remote_dir(versions)}/spyt-package.zip",
         f"{root_path}/{spyt_remote_dir(versions)}/setup-spyt-env.sh",
-        f"{root_path}/{spyt_remote_dir(versions)}/spyt.zip",
     ]
     file_paths.extend([
         f"{root_path}/{conf_remote_dir(versions)}/{config_name}"
@@ -140,11 +139,13 @@ def prepare_launch_config(conf_local_dir: str, client: Client, versions: Version
     return launch_config
 
 
-def prepare_global_config(versions: Versions, os_release: bool) -> Dict[str, Any]:
+def prepare_global_config(os_release: bool) -> Dict[str, Any]:
     global_config = copy.deepcopy(GLOBAL_CONFIG)
     proxy = os.environ.get("YT_PROXY", "os")
     global_config['spark_conf'] = get_spark_conf(proxy)
-    global_config['latest_spyt_version'] = versions.spyt_version.get_scala_version()
+    # COMPAT(alex-shishkin): Remove when nobody will use SPYT < 1.77.0
+    global_config['latest_spyt_version'] = "1.76.1"
+    global_config['latest_spark_cluster_version'] = "1.75.4"
     if not os_release:
         python_cluster_paths = {
             "3.11": "/opt/python3.11/bin/python3.11",
@@ -178,7 +179,7 @@ def make_configs(sources_path: str, client_builder: ClientBuilder, versions: Ver
 
     if not versions.spyt_version.is_snapshot:
         logger.debug("Global config file creation")
-        global_config = prepare_global_config(versions, os_release)
+        global_config = prepare_global_config(os_release)
         logger.info(f"Global config: {global_config}")
         write_config(global_config, join(conf_local_dir, 'global'))
 

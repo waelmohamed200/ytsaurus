@@ -79,7 +79,7 @@ TYPath JoinNestedNodesToPath(
 
 bool IsSupportedSequoiaType(EObjectType type)
 {
-    return IsSequoiaCompositeNodeType(type) || IsScalarType(type);
+    return IsSequoiaCompositeNodeType(type) || IsScalarType(type) || IsChunkOwnerType(type);
 }
 
 bool IsSequoiaCompositeNodeType(EObjectType type)
@@ -121,12 +121,13 @@ std::vector<NRecords::TPathToNodeId> SelectSubtree(
     const ISequoiaTransactionPtr& transaction)
 {
     auto mangledPath = MangleSequoiaPath(path);
-    return WaitFor(transaction->SelectRows<NRecords::TPathToNodeIdKey>(
-        {
+    return WaitFor(transaction->SelectRows<NRecords::TPathToNodeIdKey>({
+        .Where = {
             Format("path >= %Qv", mangledPath),
-            Format("path <= %Qv", MakeLexicographicallyMaximalMangledSequoiaPathForPrefix(mangledPath)),
+            Format("path <= %Qv", MakeLexicographicallyMaximalMangledSequoiaPathForPrefix(mangledPath))
         },
-        /* orderBy */ {"path"}))
+        .OrderBy = {"path"}
+    }))
         .ValueOrThrow();
 }
 
@@ -262,10 +263,12 @@ TFuture<void> RemoveSubtree(
 
     auto mangledPath = MangleSequoiaPath(path);
     return transaction->SelectRows<NRecords::TPathToNodeIdKey>({
-        Format("path >= %Qv", mangledPath),
-        Format("path <= %Qv", MakeLexicographicallyMaximalMangledSequoiaPathForPrefix(mangledPath)),
-    },
-    /* orderBy */ {"path"}).Apply(
+        .Where = {
+            Format("path >= %Qv", mangledPath),
+            Format("path <= %Qv", MakeLexicographicallyMaximalMangledSequoiaPathForPrefix(mangledPath))
+        },
+        .OrderBy = {"path"}
+    }).Apply(
         BIND([transaction, removeRoot, subtreeParentIdHint] (const std::vector<NRecords::TPathToNodeId>& nodesToRemove) {
             RemoveSelectedSubtree(
                 nodesToRemove,

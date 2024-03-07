@@ -36,7 +36,7 @@ void TResourceLimits::Register(TRegistrar registrar)
 
 int TResourceQuota::Vcpu() const
 {
-    const int VFactor = 1000;
+    constexpr int VFactor = 1000;
     return static_cast<int>(Cpu * VFactor);
 }
 
@@ -442,7 +442,7 @@ void TRpcProxyInfo::Register(TRegistrar registrar)
         .Default();
     RegisterAttribute(registrar, "bundle_controller_annotations", &TThis::Annotations)
         .DefaultNew();
-    RegisterAttribute(registrar, "maintenance_requests", &TThis::CmsMaintenanceRequests)
+    RegisterAttribute(registrar, "cms_maintenance_requests", &TThis::CmsMaintenanceRequests)
         .Default();
     RegisterAttribute(registrar, "modification_time", &TThis::ModificationTime)
         .Default();

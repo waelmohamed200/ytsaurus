@@ -389,7 +389,7 @@ class TControllerAgentConnectorDynamicConfig
     : public THeartbeatReporterDynamicConfigBase
 {
 public:
-    TConstantBackoffOptions TotalConfirmationBackoffStrategy;
+    TDuration JobStalenessDelay;
 
     TDuration SettleJobsTimeout;
 
@@ -497,6 +497,9 @@ public:
     TDuration HealthCheckTimeout;
     TDuration HealthCheckPeriod;
     TDuration HealthCheckFailureBackoff;
+
+    TDuration RdmaDeviceInfoUpdateTimeout;
+    TDuration RdmaDeviceInfoUpdatePeriod;
 
     std::optional<TShellCommandConfigPtr> JobSetupCommand;
 

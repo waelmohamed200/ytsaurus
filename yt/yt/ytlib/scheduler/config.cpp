@@ -520,6 +520,8 @@ const std::vector<TString>& TUserJobMonitoringConfig::GetDefaultSensorNames()
         "gpu/pcie/rx_bytes",
         "gpu/pcie/tx_bytes",
         "gpu/stuck",
+        "gpu/rdma/rx_bytes",
+        "gpu/rdma/tx_bytes",
     };
     return DefaultSensorNames;
 }
@@ -568,6 +570,15 @@ void TColumnarStatisticsConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("mode", &TThis::Mode)
         .Default(EColumnarStatisticsFetcherMode::Fallback);
+}
+
+void TCudaProfilerEnvironment::Register(TRegistrar registrar)
+{
+    registrar.Parameter("path_environment_variable_name", &TThis::PathEnvironmentVariableName)
+        .NonEmpty();
+
+    registrar.Parameter("path_environment_variable_value", &TThis::PathEnvironmentVariableValue)
+        .NonEmpty();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -798,6 +809,15 @@ void TOperationSpecBase::Register(TRegistrar registrar)
         .Default(0)
         .GreaterThanOrEqual(0);
 
+    registrar.Parameter("bypass_hunk_remote_copy_prohibition", &TThis::BypassHunkRemoteCopyProhibition)
+        .Default();
+
+    registrar.Parameter("cuda_profiler_layer_path", &TThis::CudaProfilerLayerPath)
+        .Default();
+
+    registrar.Parameter("cuda_profiler_environment", &TThis::CudaProfilerEnvironment)
+        .Default();
+
     registrar.Postprocessor([] (TOperationSpecBase* spec) {
         if (spec->UnavailableChunkStrategy == EUnavailableChunkAction::Wait &&
             spec->UnavailableChunkTactics == EUnavailableChunkAction::Skip)
@@ -873,8 +893,7 @@ void TJobExperimentConfig::Register(TRegistrar registrar)
         .Default();
 
     registrar.Postprocessor([] (TJobExperimentConfig* config) {
-        if (config->BaseLayerPath && config->NetworkProject)
-        {
+        if (config->BaseLayerPath && config->NetworkProject) {
             THROW_ERROR_EXCEPTION(
                 "Options \"base_layer_path\" and \"network_project\" cannot be specified simultaneously")
                 << TErrorAttribute("base_layer_path", config->BaseLayerPath)
@@ -1031,6 +1050,9 @@ void TUserJobSpec::Register(TRegistrar registrar)
 
     registrar.Parameter("docker_image", &TThis::DockerImage)
         .Default();
+
+    registrar.Parameter("redirect_stdout_to_stderr", &TThis::RedirectStdoutToStderr)
+        .Default(false);
 
     registrar.Parameter("profilers", &TThis::Profilers)
         .Default();
@@ -1496,7 +1518,7 @@ void TSortOperationSpecBase::Register(TRegistrar registrar)
             const auto& upperBound = TKeyBound::FromRow() < spec->PivotKeys[index];
             const auto& nextUpperBound = TKeyBound::FromRow() < spec->PivotKeys[index + 1];
             if (sortComparator.CompareKeyBounds(upperBound, nextUpperBound) >= 0) {
-                THROW_ERROR_EXCEPTION("Pivot keys should should form a strictly increasing sequence")
+                THROW_ERROR_EXCEPTION("Pivot keys should form a strictly increasing sequence")
                     << TErrorAttribute("pivot_key", spec->PivotKeys[index])
                     << TErrorAttribute("next_pivot_key", spec->PivotKeys[index + 1])
                     << TErrorAttribute("comparator", sortComparator);
@@ -2136,6 +2158,9 @@ void TPoolConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("enable_priority_scheduling_segment_module_assignment", &TThis::EnablePrioritySchedulingSegmentModuleAssignment)
         .Default();
+
+    registrar.Parameter("enable_lightweight_operations", &TThis::EnableLightweightOperations)
+        .Default(false);
 
     // COMPAT(arkady-e1ppa)
     registrar.Postprocessor([] (TThis* config) {

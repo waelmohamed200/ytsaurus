@@ -15,18 +15,20 @@
 #include <yt/yt/server/node/query_agent/config.h>
 
 #include <yt/yt/server/node/tablet_node/bootstrap.h>
+#include <yt/yt/server/node/tablet_node/error_manager.h>
+#include <yt/yt/server/node/tablet_node/error_reporting_service_base.h>
 #include <yt/yt/server/node/tablet_node/lookup.h>
 #include <yt/yt/server/node/tablet_node/master_connector.h>
+#include <yt/yt/server/node/tablet_node/overload_controlling_service_base.h>
 #include <yt/yt/server/node/tablet_node/security_manager.h>
 #include <yt/yt/server/node/tablet_node/store.h>
 #include <yt/yt/server/node/tablet_node/replication_log.h>
 #include <yt/yt/server/node/tablet_node/tablet.h>
+#include <yt/yt/server/node/tablet_node/tablet_manager.h>
 #include <yt/yt/server/node/tablet_node/tablet_reader.h>
 #include <yt/yt/server/node/tablet_node/tablet_slot.h>
 #include <yt/yt/server/node/tablet_node/tablet_snapshot_store.h>
-#include <yt/yt/server/node/tablet_node/tablet_manager.h>
 #include <yt/yt/server/node/tablet_node/transaction_manager.h>
-#include <yt/yt/server/node/tablet_node/overload_controlling_service_base.h>
 
 #include <yt/yt/server/lib/misc/profiling_helpers.h>
 
@@ -52,6 +54,7 @@
 
 #include <yt/yt/ytlib/query_client/query_service_proxy.h>
 #include <yt/yt/ytlib/query_client/functions_cache.h>
+#include <yt/yt/ytlib/query_client/tracked_memory_chunk_provider.h>
 
 #include <yt/yt/ytlib/misc/memory_usage_tracker.h>
 
@@ -187,159 +190,15 @@ TTypeErasedRow ReadVersionedReplicationRow(
 
 ////////////////////////////////////////////////////////////////////////////////
 
-DECLARE_REFCOUNTED_CLASS(TMemoryProviderMapByTag)
-DECLARE_REFCOUNTED_CLASS(TTrackedMemoryChunkProvider)
-
-////////////////////////////////////////////////////////////////////////////////
-
-class TTrackedMemoryChunkProvider
-    : public IMemoryChunkProvider
-{
-private:
-    struct THolder
-        : public TAllocationHolder
-    {
-        THolder(
-            TMutableRef ref,
-            TRefCountedTypeCookie cookie)
-            : TAllocationHolder(ref, cookie)
-        { }
-
-        ~THolder()
-        {
-            if (!Owner) {
-                return;
-            }
-
-            Owner->Allocated_ -= GetRef().Size();
-            if (Owner->MemoryTracker_) {
-                Owner->MemoryTracker_->Release(GetRef().Size());
-            }
-        }
-
-        TIntrusivePtr<TTrackedMemoryChunkProvider> Owner;
-    };
-
-public:
-    TTrackedMemoryChunkProvider(
-        TString key,
-        TMemoryProviderMapByTagPtr parent,
-        size_t limit,
-        IMemoryUsageTrackerPtr memoryTracker)
-        : Key_(std::move(key))
-        , Parent_(std::move(parent))
-        , Limit_(limit)
-        , MemoryTracker_(std::move(memoryTracker))
-    { }
-
-    std::unique_ptr<TAllocationHolder> Allocate(size_t size, TRefCountedTypeCookie cookie) override
-    {
-        size_t allocated = Allocated_.load();
-        do {
-            if (allocated + size > Limit_) {
-                THROW_ERROR_EXCEPTION("Not enough memory to serve allocation",
-                    size,
-                    allocated,
-                    Limit_)
-                    << TErrorAttribute("allocation_size", size)
-                    << TErrorAttribute("allocated", allocated)
-                    << TErrorAttribute("limit", Limit_);
-            }
-        } while (!Allocated_.compare_exchange_weak(allocated, allocated + size));
-
-        std::unique_ptr<THolder> result(TAllocationHolder::Allocate<THolder>(size, cookie));
-        auto allocatedSize = result->GetRef().Size();
-        YT_VERIFY(allocatedSize != 0);
-
-        auto delta = allocatedSize - size;
-        allocated = Allocated_.fetch_add(delta) + delta;
-
-        auto maxAllocated = MaxAllocated_.load();
-        while (maxAllocated < allocated && !MaxAllocated_.compare_exchange_weak(maxAllocated, allocated));
-
-        auto finally = Finally([&] {
-            Allocated_ -= allocatedSize;
-        });
-
-        if (MemoryTracker_) {
-            MemoryTracker_->TryAcquire(allocatedSize)
-                .ThrowOnError();
-        }
-
-        finally.Release();
-        result->Owner = this;
-
-        return result;
-    }
-
-    size_t GetMaxAllocated() const
-    {
-        return MaxAllocated_;
-    }
-
-    ~TTrackedMemoryChunkProvider();
-
-private:
-    const TString Key_;
-    const TMemoryProviderMapByTagPtr Parent_;
-    const size_t Limit_;
-    const IMemoryUsageTrackerPtr MemoryTracker_;
-
-    std::atomic<size_t> Allocated_ = {0};
-    std::atomic<size_t> MaxAllocated_ = {0};
-};
-
-DEFINE_REFCOUNTED_TYPE(TTrackedMemoryChunkProvider)
-
-////////////////////////////////////////////////////////////////////////////////
-
-class TMemoryProviderMapByTag
-    : public TRefCounted
-{
-public:
-    TTrackedMemoryChunkProviderPtr GetProvider(
-        const TString& tag,
-        size_t limit,
-        IMemoryUsageTrackerPtr memoryTracker)
-    {
-        auto guard = Guard(SpinLock_);
-        auto it = Map_.emplace(tag, nullptr).first;
-
-        auto result = it->second.Lock();
-
-        if (!result) {
-            result = New<TTrackedMemoryChunkProvider>(tag, this, limit, std::move(memoryTracker));
-            it->second = result;
-        }
-
-        return result;
-    }
-
-    friend class TTrackedMemoryChunkProvider;
-
-private:
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock_);
-    THashMap<TString, TWeakPtr<TTrackedMemoryChunkProvider>> Map_;
-};
-
-DEFINE_REFCOUNTED_TYPE(TMemoryProviderMapByTag)
-
-TTrackedMemoryChunkProvider::~TTrackedMemoryChunkProvider()
-{
-    auto guard = Guard(Parent_->SpinLock_);
-    Parent_->Map_.erase(Key_);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 class TQueryService
-    : public TOverloadControllingServiceBase<TServiceBase>
+    : public TErrorReportingServiceBase<TOverloadControllingServiceBase<TServiceBase>>
 {
 public:
     TQueryService(
         TQueryAgentConfigPtr config,
         NTabletNode::IBootstrap* bootstrap)
-        : TOverloadControllingServiceBase(
+        : TErrorReportingServiceBase(
+            bootstrap,
             bootstrap,
             bootstrap->GetQueryPoolInvoker(
                 DefaultQLExecutionPoolName,
@@ -366,26 +225,34 @@ public:
     {
         RegisterMethod(RPC_SERVICE_METHOD_DESC(Execute)
             .SetCancelable(true)
-            .SetInvokerProvider(BIND(&TQueryService::GetExecuteInvoker, Unretained(this))));
+            .SetInvokerProvider(BIND(&TQueryService::GetExecuteInvoker, Unretained(this)))
+            .SetHandleMethodError(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(Multiread)
             .SetCancelable(true)
             .SetInvoker(Bootstrap_->GetTabletLookupPoolInvoker())
-            .SetRequestQueueProvider(MultireadRequestQueueProvider));
+            .SetRequestQueueProvider(MultireadRequestQueueProvider_)
+            .SetHandleMethodError(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(PullRows)
             .SetCancelable(true)
-            .SetInvoker(Bootstrap_->GetTabletLookupPoolInvoker()));
+            .SetInvoker(Bootstrap_->GetTabletLookupPoolInvoker())
+            .SetHandleMethodError(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(GetTabletInfo)
-            .SetInvoker(Bootstrap_->GetTabletLookupPoolInvoker()));
+            .SetInvoker(Bootstrap_->GetTabletLookupPoolInvoker())
+            .SetHandleMethodError(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(ReadDynamicStore)
             .SetCancelable(true)
             .SetStreamingEnabled(true)
-            .SetResponseCodec(NCompression::ECodec::Lz4));
+            .SetResponseCodec(NCompression::ECodec::Lz4)
+            .SetHandleMethodError(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(FetchTabletStores)
-            .SetInvoker(Bootstrap_->GetTabletFetchPoolInvoker()));
+            .SetInvoker(Bootstrap_->GetTabletFetchPoolInvoker())
+            .SetHandleMethodError(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(FetchTableRows)
-            .SetInvoker(Bootstrap_->GetTableRowFetchPoolInvoker()));
+            .SetInvoker(Bootstrap_->GetTableRowFetchPoolInvoker())
+            .SetHandleMethodError(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(GetOrderedTabletSafeTrimRowCount)
-            .SetInvoker(Bootstrap_->GetTableRowFetchPoolInvoker()));
+            .SetInvoker(Bootstrap_->GetTableRowFetchPoolInvoker())
+            .SetHandleMethodError(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(CreateDistributedSession)
             .SetInvoker(bootstrap->GetQueryPoolInvoker(DefaultQLExecutionPoolName, DefaultQLExecutionTag)));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(PingDistributedSession)
@@ -410,7 +277,7 @@ private:
     const IEvaluatorPtr Evaluator_;
     const IMemoryUsageTrackerPtr MemoryTracker_;
     const TMemoryProviderMapByTagPtr MemoryProvider_ = New<TMemoryProviderMapByTag>();
-    const IRequestQueueProviderPtr MultireadRequestQueueProvider = CreateMultireadRequestQueueProvider();
+    const IRequestQueueProviderPtr MultireadRequestQueueProvider_ = CreateMultireadRequestQueueProvider();
     const IDistributedSessionManagerPtr DistributedSessionManager_;
 
     std::atomic<bool> RejectUponThrottlerOverdraft_;
@@ -678,7 +545,7 @@ private:
         };
 
         TRowBatchReadOptions rowBatchReadOptions{
-            .MaxRowsPerRead = request->max_rows_per_read()
+            .MaxRowsPerRead = request->max_rows_per_read(),
         };
 
         context->SetRequestInfo("TabletId: %v, StartReplicationRowIndex: %v, Progress: %v, UpperTimestamp: %v, ResponseCodec: %v, ReadSessionId: %v)",
@@ -702,6 +569,9 @@ private:
             Logger,
             [&] {
                 auto tabletSnapshot = snapshotStore->GetTabletSnapshotOrThrow(tabletId, cellId, mountRevision);
+
+                SetErrorManagerContextFromTabletSnapshot(tabletSnapshot);
+
                 if (tabletSnapshot->UpstreamReplicaId != upstreamReplicaId) {
                     THROW_ERROR_EXCEPTION(
                         NTabletClient::EErrorCode::UpstreamReplicaMismatch,
@@ -848,6 +718,8 @@ private:
 
             auto tabletSnapshot = snapshotStore->GetLatestTabletSnapshotOrThrow(tabletId, cellId);
 
+            SetErrorManagerContextFromTabletSnapshot(tabletSnapshot);
+
             auto* protoTabletInfo = response->add_tablets();
             ToProto(protoTabletInfo->mutable_tablet_id(), tabletId);
             // NB: Read barrier timestamp first to ensure a certain degree of consistency with TotalRowCount.
@@ -912,6 +784,8 @@ private:
 
         const auto& snapshotStore = Bootstrap_->GetTabletSnapshotStore();
         auto tabletSnapshot = snapshotStore->GetLatestTabletSnapshotOrThrow(tabletId, cellId);
+
+        SetErrorManagerContextFromTabletSnapshot(tabletSnapshot);
 
         if (tabletSnapshot->IsPreallocatedDynamicStoreId(storeId)) {
             YT_LOG_DEBUG("Dynamic store is not created yet, sending nothing (TabletId: %v, StoreId: %v, "
@@ -999,8 +873,8 @@ private:
 
                 // NB: Dynamic store reader is non-blocking in the sense of ready event.
                 // However, waiting on blocked row may occur. See YT-12492.
-                auto batch = reader->Read(options);
-                if (!batch || batch->IsEmpty()) {
+                auto batch = ReadRowBatch(reader, options);
+                if (!batch) {
                     return TSharedRef{};
                 }
                 rowCount += batch->GetRowCount();
@@ -1073,7 +947,7 @@ private:
                     sessionDataWeight += dataWeight;
                 });
 
-                auto batch = reader->Read(readOptions);
+                auto batch = ReadRowBatch(reader, readOptions);
                 if (!batch) {
                     return TSharedRef{};
                 }
@@ -1297,6 +1171,8 @@ private:
                     continue;
                 }
 
+                SetErrorManagerContextFromTabletSnapshot(tabletSnapshot);
+
                 if (!tabletSnapshot->PhysicalSchema->IsSorted()) {
                     THROW_ERROR_EXCEPTION("Fetching tablet stores for ordered tablets is not implemented");
                 }
@@ -1454,6 +1330,9 @@ private:
         auto tabletSnapshot = request->has_mount_revision()
             ? snapshotStore->GetTabletSnapshotOrThrow(tabletId, cellId, request->mount_revision())
             : snapshotStore->GetLatestTabletSnapshotOrThrow(tabletId, cellId);
+
+        SetErrorManagerContextFromTabletSnapshot(tabletSnapshot);
+
         snapshotStore->ValidateTabletAccess(tabletSnapshot, SyncLastCommittedTimestamp);
         snapshotStore->ValidateBundleNotBanned(tabletSnapshot);
 
@@ -1657,7 +1536,8 @@ private:
 
     DECLARE_RPC_SERVICE_METHOD(NQueryClient::NProto, GetOrderedTabletSafeTrimRowCount)
     {
-        context->SetRequestInfo("Subrequests: %v", request->subrequests_size());
+        context->SetRequestInfo("Subrequests: %v",
+            request->subrequests_size());
 
         std::vector<TFuture<i64>> asyncSubrequests;
         asyncSubrequests.reserve(request->subrequests_size());
@@ -1701,6 +1581,9 @@ private:
         auto tabletSnapshot = mountRevision
             ? snapshotStore->GetTabletSnapshotOrThrow(tabletId, cellId, *mountRevision)
             : snapshotStore->GetLatestTabletSnapshotOrThrow(tabletId, cellId);
+
+        SetErrorManagerContextFromTabletSnapshot(tabletSnapshot);
+
         snapshotStore->ValidateTabletAccess(tabletSnapshot, SyncLastCommittedTimestamp);
         snapshotStore->ValidateBundleNotBanned(tabletSnapshot);
 
@@ -1766,11 +1649,9 @@ private:
         // The list of ordered stores is produced from a mapping of the form [startingRowIndex -> store],
         // so only the last store can potentially be empty. This is perfectly fine for us.
 
-        if (desiredStoreIt != storeSnapshots.end()) {
-            return desiredStoreIt->StartRowIndex;
-        } else {
-            return lastStore.FinishRowIndex;
-        }
+        return desiredStoreIt != storeSnapshots.end()
+            ? desiredStoreIt->StartRowIndex
+            : lastStore.FinishRowIndex;
     }
 
     class TTabletBatchFetcher
@@ -1793,9 +1674,9 @@ private:
                 columnFilter,
                 std::move(lower),
                 std::move(upper),
-                /* timestampRange */ {},
+                /*timestampRange*/ {},
                 chunkReaderOptions,
-                /* tabletThrottlerKind */ std::nullopt,
+                /*tabletThrottlerKind*/ std::nullopt,
                 EWorkloadCategory::SystemTabletReplication))
             , Logger(logger)
         { }
@@ -2084,7 +1965,9 @@ private:
         auto retentionTime = FromProto<TDuration>(request->retention_time());
         auto codecId = CheckedEnumCast<ECodec>(request->codec());
 
-        context->SetRequestInfo("DistributedSessionId: %v", sessionId);
+        context->SetRequestInfo("DistributedSessionId: %v, CodecId: %v",
+            sessionId,
+            codecId);
 
         DistributedSessionManager_->GetDistributedSessionOrCreate(sessionId, retentionTime, codecId);
 
@@ -2096,7 +1979,8 @@ private:
         auto sessionId = FromProto<TDistributedSessionId>(request->session_id());
         auto session = DistributedSessionManager_->GetDistributedSessionOrThrow(sessionId);
 
-        context->SetRequestInfo("DistributedSessionId: %v", sessionId);
+        context->SetRequestInfo("DistributedSessionId: %v",
+            sessionId);
 
         session->RenewLease();
 
@@ -2111,7 +1995,8 @@ private:
     {
         auto sessionId = FromProto<TDistributedSessionId>(request->session_id());
 
-        context->SetRequestInfo("SessionId: %v", sessionId);
+        context->SetRequestInfo("SessionId: %v",
+            sessionId);
 
         if (DistributedSessionManager_->CloseDistributedSession(sessionId)) {
             YT_LOG_DEBUG("Distributed query session closed remotely (SessionId: %v)", sessionId);
@@ -2126,10 +2011,12 @@ private:
         auto rowsetId = FromProto<TRowsetId>(request->rowset_id());
         auto schema = FromProto<TTableSchemaPtr>(request->schema());
 
-        context->SetRequestInfo("SessionId: %v, RowsetId: %v", sessionId, rowsetId);
+        context->SetRequestInfo("SessionId: %v, RowsetId: %v",
+            sessionId,
+            rowsetId);
 
         auto session = DistributedSessionManager_->GetDistributedSessionOrThrow(sessionId);
-        session->InsertReaderOrThrow(
+        session->InsertOrThrow(
             CreateWireProtocolRowsetReader(
                 request->Attachments(),
                 session->GetCodecId(),

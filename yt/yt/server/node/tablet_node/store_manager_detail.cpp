@@ -194,7 +194,9 @@ void TStoreManagerBase::AddStore(IStorePtr store, bool onMount, bool onFlush, TP
 
 void TStoreManagerBase::BulkAddStores(TRange<IStorePtr> stores, bool onMount)
 {
+    TBulkInsertProfiler bulkInsertProfiler(Tablet_);
     for (auto store : stores) {
+        bulkInsertProfiler.Update(store);
         AddStore(std::move(store), onMount, /*onFlush*/ false);
     }
 }
@@ -524,9 +526,10 @@ void TStoreManagerBase::Rotate(bool createNewStore, EStoreRotationReason reason)
 
         StructuredLogger_->OnStoreStateChanged(activeStore);
 
-        YT_LOG_INFO("Rotating store (StoreId: %v, DynamicMemoryUsage: %v, Reason: %v)",
+        YT_LOG_INFO("Rotating store (StoreId: %v, DynamicMemoryUsage: %v, RowCount: %v, Reason: %v)",
             activeStore->GetId(),
             activeStore->GetDynamicMemoryUsage(),
+            activeStore->GetRowCount(),
             reason);
 
         if (activeStore->GetLockCount() > 0) {

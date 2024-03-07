@@ -2779,7 +2779,7 @@ void PrepareQuery(
         // not prefix, because of equal prefixes near borders
         bool containsPrimaryKey = keyPrefix == query->GetKeyColumns().size();
         // COMPAT(lukyan)
-        query->UseDisjointGroupBy = containsPrimaryKey;
+        query->UseDisjointGroupBy = containsPrimaryKey && !keyColumns.empty();
     }
 
     if (ast.HavingPredicate) {
@@ -3128,17 +3128,6 @@ TJoinClausePtr BuildJoinClause(
         foreignEquations.push_back(New<TReferenceExpression>(foreignColumn->LogicalType, foreignColumn->Name));
     }
 
-    // Equivalences don't have to be explicitly equated, only registered in the respective lookup tables.
-    for (const auto& referenceExpr : tableJoin.Equivalences) {
-        auto selfColumn = builder.GetColumnPtr(referenceExpr->Reference);
-        auto foreignColumn = foreignBuilder.GetColumnPtr(referenceExpr->Reference);
-
-        if (!selfColumn || !foreignColumn) {
-            THROW_ERROR_EXCEPTION("Column %Qv not found",
-                NAst::InferColumnName(referenceExpr->Reference));
-        }
-    }
-
     for (const auto& argument : tableJoin.Lhs) {
         selfEquations.push_back({builder.BuildTypedExpression(argument, ComparableTypes), false});
     }
@@ -3381,18 +3370,21 @@ std::unique_ptr<TPlanFragment> PreparePlanFragment(
     const TString& source,
     const TFunctionsFetcher& functionsFetcher,
     TYsonStringBuf placeholderValues,
-    int syntaxVersion)
+    int syntaxVersion,
+    IMemoryUsageTrackerPtr memoryTracker)
 {
     return PreparePlanFragment(
         callbacks,
         *ParseSource(source, EParseMode::Query, placeholderValues, syntaxVersion),
-        functionsFetcher);
+        functionsFetcher,
+        memoryTracker);
 }
 
 std::unique_ptr<TPlanFragment> PreparePlanFragment(
     IPrepareCallbacks* callbacks,
     const TParsedSource& parsedSource,
-    const TFunctionsFetcher& functionsFetcher)
+    const TFunctionsFetcher& functionsFetcher,
+    IMemoryUsageTrackerPtr memoryTracker)
 {
     auto query = New<TQuery>(TGuid::Create());
 
@@ -3533,11 +3525,19 @@ std::unique_ptr<TPlanFragment> PreparePlanFragment(
         *query->GetReadSchema(),
         *query->GetTableSchema());
 
+    auto rowBuffer = New<TRowBuffer>(
+        TQueryPreparerBufferTag(),
+        TChunkedMemoryPool::DefaultStartChunkSize,
+        memoryTracker);
+
     auto fragment = std::make_unique<TPlanFragment>();
     fragment->Query = query;
     fragment->DataSource.ObjectId = selfDataSplit.ObjectId;
     fragment->DataSource.CellId = selfDataSplit.CellId;
-    fragment->DataSource.Ranges = MakeSingletonRowRange(selfDataSplit.LowerBound, selfDataSplit.UpperBound);
+    fragment->DataSource.Ranges = MakeSingletonRowRange(
+        selfDataSplit.LowerBound,
+        selfDataSplit.UpperBound,
+        std::move(rowBuffer));
 
     return fragment;
 }

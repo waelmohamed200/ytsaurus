@@ -202,14 +202,14 @@ std::vector<IReaderFactoryPtr> CreateReaderFactories(
 
                         int keyColumnCount = sortColumns.size();
                         if (chunkSpec.has_lower_limit()) {
-                            FromProto(&readRange.LowerLimit(), chunkSpec.lower_limit(), /* isUpper */ false, keyColumnCount);
+                            FromProto(&readRange.LowerLimit(), chunkSpec.lower_limit(), /*isUpper*/ false, keyColumnCount);
                         }
                         if (chunkSpec.has_upper_limit()) {
-                            FromProto(&readRange.UpperLimit(), chunkSpec.upper_limit(), /* isUpper */ true, keyColumnCount);
+                            FromProto(&readRange.UpperLimit(), chunkSpec.upper_limit(), /*isUpper*/ true, keyColumnCount);
                         }
 
-                        if (chunkReadOptions.GranuleFilter) {
-                            auto allColumnStatistics = FromProto<TColumnarStatistics>(chunkMeta->ColumnarStatisticsExt(), chunkMeta->Misc().row_count());
+                        if (chunkReadOptions.GranuleFilter && chunkMeta->ColumnarStatisticsExt()) {
+                            auto allColumnStatistics = FromProto<TColumnarStatistics>(*chunkMeta->ColumnarStatisticsExt(), chunkMeta->Misc().row_count());
 
                             if (chunkReadOptions.GranuleFilter->CanSkip(allColumnStatistics, chunkMeta->ChunkNameTable())) {
                                 readRange = TReadRange::MakeEmpty();
@@ -550,7 +550,7 @@ void TSchemalessMultiChunkReader::SkipCurrentReader()
     }
 
     // Pretend that current reader already finished.
-    if (!MultiReaderManager_->OnEmptyRead(/* readerFinished */ true)) {
+    if (!MultiReaderManager_->OnEmptyRead(/*readerFinished*/ true)) {
         Finished_ = true;
     }
 }
@@ -1037,6 +1037,10 @@ ISchemalessMultiChunkReaderPtr TSchemalessMergingMultiChunkReader::Create(
     auto retentionTimestamp = dataSource.GetRetentionTimestamp();
     const auto& renameDescriptors = dataSource.ColumnRenameDescriptors();
 
+    THashSet<TStringBuf> omittedInaccessibleColumnSet(
+        dataSource.OmittedInaccessibleColumns().begin(),
+        dataSource.OmittedInaccessibleColumns().end());
+
     if (!columnFilter.IsUniversal()) {
         TColumnFilter::TIndexes transformedIndexes;
         for (auto index : columnFilter.GetIndexes()) {
@@ -1063,7 +1067,7 @@ ISchemalessMultiChunkReaderPtr TSchemalessMergingMultiChunkReader::Create(
     try {
         for (int columnIndex = 0; columnIndex < std::ssize(versionedReadSchema->Columns()); ++columnIndex) {
             const auto& column = versionedReadSchema->Columns()[columnIndex];
-            if (versionedColumnFilter.ContainsIndex(columnIndex)) {
+            if (versionedColumnFilter.ContainsIndex(columnIndex) && !omittedInaccessibleColumnSet.contains(column.Name())) {
                 idMapping[columnIndex] = nameTable->GetIdOrRegisterName(column.Name());
             } else {
                 // We should skip this column in schemaless reading.

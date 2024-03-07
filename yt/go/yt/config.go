@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/opentracing/opentracing-go"
+	"golang.org/x/xerrors"
+
 	"go.ytsaurus.tech/library/go/core/log"
 	"go.ytsaurus.tech/library/go/core/log/nop"
 	zaplog "go.ytsaurus.tech/library/go/core/log/zap"
 	"go.ytsaurus.tech/yt/go/guid"
-	"golang.org/x/xerrors"
 )
 
 type Config struct {
@@ -50,6 +51,13 @@ type Config struct {
 	//
 	// TLS is not supported in local mode.
 	UseTLS bool
+
+	// CertificateAuthorityData contains PEM-encoded certificate authority certificates.
+	//
+	// Client appends this certificates to the system cert pool.
+	//
+	// This option is relevant for HTTP client with enabled TLS.
+	CertificateAuthorityData []byte
 
 	// Token configures OAuth token used by the client.
 	//

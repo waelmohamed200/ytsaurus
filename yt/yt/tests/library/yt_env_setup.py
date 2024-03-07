@@ -29,11 +29,8 @@ from yt.environment.helpers import (  # noqa
     RPC_PROXIES_SERVICE,
     HTTP_PROXIES_SERVICE,
 )
-from yt_sequoia_helpers import (
-    PATH_TO_NODE_ID_TABLE,
-    NODE_ID_TO_PATH_TABLE,
-    CHILD_NODE_TABLE,
-)
+
+from yt.sequoia_tools import DESCRIPTORS
 
 from yt.test_helpers import wait, WaitFailed, get_work_path, get_build_root, get_tests_sandbox
 import yt.test_helpers.cleanup as test_cleanup
@@ -739,22 +736,23 @@ class YTEnvSetup(object):
         yt_commands.sync_create_cells(1, tablet_cell_bundle="sequoia", driver=ground_driver)
         yt_commands.set("//sys/accounts/sequoia/@resource_limits/tablet_count", 10000, driver=ground_driver)
 
-        for table in yt_sequoia_helpers.SEQUOIA_TABLES:
+        for descriptor in DESCRIPTORS.as_dict().values():
+            table_path = descriptor.get_default_path()
             yt_commands.create(
                 "table",
-                table.get_path(),
+                table_path,
                 attributes={
                     "dynamic": True,
-                    "enable_shared_write_locks": True,
-                    "schema": table.schema,
+                    "schema": descriptor.schema,
                     "tablet_cell_bundle": "sequoia",
                     "account": "sequoia",
+                    "enable_shared_write_locks": True,
                 },
                 driver=ground_driver)
-            yt_commands.mount_table(table.get_path(), driver=ground_driver)
+            yt_commands.mount_table(table_path, driver=ground_driver)
 
-        for table in yt_sequoia_helpers.SEQUOIA_TABLES:
-            yt_commands.wait_for_tablet_state(table.get_path(), "mounted", driver=ground_driver)
+        for descriptor in DESCRIPTORS.as_dict().values():
+            yt_commands.wait_for_tablet_state(descriptor.get_default_path(), "mounted", driver=ground_driver)
 
     @classmethod
     def apply_dynamic_config_patches(cls, config, ytserver_version, cluster_index):
@@ -961,7 +959,8 @@ class YTEnvSetup(object):
                 self.setup_cluster(method, cluster_index + self.GROUND_INDEX_OFFSET)
 
         for env in self.combined_envs:
-            env.restore_default_dynamic_node_config()
+            env.restore_default_node_dynamic_config()
+            env.restore_default_bundle_dynamic_config()
 
     def setup_cluster(self, method, cluster_index):
         driver = yt_commands.get_driver(cluster=self.get_cluster_name(cluster_index))
@@ -1135,7 +1134,7 @@ class YTEnvSetup(object):
                 driver=driver,
             )
 
-    def teardown_method(self, method):
+    def teardown_method(self, method, wait_for_nodes=True):
         yt_commands._zombie_responses[:] = []
 
         for cluster_index, env in enumerate(self.ground_envs + [self.Env] + self.remote_envs):
@@ -1147,14 +1146,14 @@ class YTEnvSetup(object):
                 self._master_exit_read_only_sync(env, driver=driver)
 
         for cluster_index, env in enumerate([self.Env] + self.remote_envs):
-            self.teardown_cluster(method, cluster_index)
+            self.teardown_cluster(method, cluster_index, wait_for_nodes)
 
             if self.get_param("USE_SEQUOIA", cluster_index):
                 self.teardown_cluster(method, cluster_index + self.GROUND_INDEX_OFFSET)
 
         yt_commands.reset_events_on_fs()
 
-    def teardown_cluster(self, method, cluster_index):
+    def teardown_cluster(self, method, cluster_index, wait_for_nodes=True):
         cluster_name = self.get_cluster_name(cluster_index)
         driver = yt_commands.get_driver(cluster=cluster_name)
         if driver is None:
@@ -1163,7 +1162,7 @@ class YTEnvSetup(object):
         if self.VALIDATE_SEQUOIA_TREE_CONSISTENCY and not self._is_ground_cluster(cluster_index):
             yt_sequoia_helpers.validate_sequoia_tree_consistency(cluster_name)
 
-        self._reset_nodes(driver=driver)
+        self._reset_nodes(wait_for_nodes, driver=driver)
 
         if self.get_param("NUM_SCHEDULERS", cluster_index) > 0:
             self._remove_operations(driver=driver)
@@ -1178,9 +1177,9 @@ class YTEnvSetup(object):
             yt_commands.gc_collect(driver=driver)
 
             if self._is_ground_cluster(cluster_index):
-                wait(lambda: yt_commands.select_rows(f"* from [{PATH_TO_NODE_ID_TABLE.get_path()}]", driver=driver) == [])
-                wait(lambda: yt_commands.select_rows(f"* from [{NODE_ID_TO_PATH_TABLE.get_path()}]", driver=driver) == [])
-                wait(lambda: yt_commands.select_rows(f"* from [{CHILD_NODE_TABLE.get_path()}]", driver=driver) == [])
+                wait(lambda: yt_commands.select_rows(f"* from [{DESCRIPTORS.path_to_node_id.get_default_path()}]", driver=driver) == [])
+                wait(lambda: yt_commands.select_rows(f"* from [{DESCRIPTORS.node_id_to_path.get_default_path()}]", driver=driver) == [])
+                wait(lambda: yt_commands.select_rows(f"* from [{DESCRIPTORS.child_node.get_default_path()}]", driver=driver) == [])
 
         # Ground cluster can't have rootstocks or portals.
         # Do not remove tmp if ENABLE_TMP_ROOTSTOCK, since it will be removed with scions.
@@ -1221,7 +1220,7 @@ class YTEnvSetup(object):
 
         yt_commands.execute_batch(requests)
 
-    def _reset_nodes(self, driver=None):
+    def _reset_nodes(self, wait_for_nodes=True, driver=None):
         use_maintenance_requests = yt_commands.get(
             "//sys/@config/node_tracker/forbid_maintenance_attribute_writes",
             default=False,
@@ -1300,6 +1299,18 @@ class YTEnvSetup(object):
                                 yt.logger.error(f"Location {path} is disabled after test execution")
                                 disabled_paths.append(path)
         assert not disabled_paths, 'Found disabled locations after test execution:\n' + "\n".join(disabled_paths)
+
+        def nodes_online():
+            nodes = yt_commands.ls("//sys/cluster_nodes", attributes=["state"], driver=driver)
+
+            return all(node.attributes["state"] == "online" for node in nodes)
+
+        if wait_for_nodes:
+            wait(
+                nodes_online,
+                ignore_exceptions=True,
+                error_message="Nodes weren't online after the test teardown for 60 seconds",
+                timeout=60)
 
     def _walk_dictionary(self, dictionary, key_list):
         node = dictionary

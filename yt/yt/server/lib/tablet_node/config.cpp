@@ -17,6 +17,7 @@
 namespace NYT::NTabletNode {
 
 using namespace NYTree;
+using namespace NTabletClient;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -53,6 +54,12 @@ void TRowDigestCompactionConfig::Register(TRegistrar registrar)
     registrar.Parameter("max_timestamps_per_value", &TThis::MaxTimestampsPerValue)
         .GreaterThanOrEqual(1)
         .Default(8192);
+}
+
+bool operator==(const TRowDigestCompactionConfig& lhs, const TRowDigestCompactionConfig& rhs)
+{
+    return lhs.MaxObsoleteTimestampRatio == rhs.MaxObsoleteTimestampRatio &&
+        lhs.MaxTimestampsPerValue == rhs.MaxTimestampsPerValue;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -265,7 +272,7 @@ void TCustomTableMountConfig::Register(TRegistrar registrar)
         .Default(false);
 
     registrar.Parameter("row_merger_type", &TThis::RowMergerType)
-        .Default(ETabletRowMergerType::Legacy);
+        .Default(ERowMergerType::Legacy);
 
     registrar.Parameter("enable_lsm_verbose_logging", &TThis::EnableLsmVerboseLogging)
         .Default(false);
@@ -598,14 +605,15 @@ void TStoreCompactorDynamicConfig::Register(TRegistrar registrar)
         .GreaterThan(0)
         .Optional();
 
-    registrar.Parameter("row_digest_request_throttler", &TThis::RowDigestRequestThrottler)
-        .DefaultNew();
+    registrar.Parameter("chunk_view_size_fetch_period", &TThis::ChunkViewSizeFetchPeriod)
+        .Default(TDuration::Seconds(5));
     registrar.Parameter("chunk_view_size_request_throttler", &TThis::ChunkViewSizeRequestThrottler)
         .DefaultNew();
-    registrar.Parameter("row_digest_throttler_try_acquire_backoff", &TThis::RowDigestThrottlerTryAcquireBackoff)
-        .Default(TDuration::Seconds(1));
-    registrar.Parameter("chunk_view_size_throttler_try_acquire_backoff", &TThis::ChunkViewSizeThrottlerTryAcquireBackoff)
-        .Default(TDuration::Seconds(1));
+
+    registrar.Parameter("row_digest_fetch_period", &TThis::RowDigestFetchPeriod)
+        .Default(TDuration::Seconds(5));
+    registrar.Parameter("row_digest_request_throttler", &TThis::RowDigestRequestThrottler)
+        .DefaultNew();
     registrar.Parameter("use_row_digests", &TThis::UseRowDigests)
         .Default(false);
 
@@ -648,6 +656,10 @@ TInMemoryManagerConfigPtr TInMemoryManagerConfig::ApplyDynamic(
     UpdateYsonStructField(config->ControlRpcTimeout, dynamicConfig->ControlRpcTimeout);
     UpdateYsonStructField(config->HeavyRpcTimeout, dynamicConfig->HeavyRpcTimeout);
     UpdateYsonStructField(config->RemoteSendBatchSize, dynamicConfig->RemoteSendBatchSize);
+    UpdateYsonStructField(
+        config->EnablePreliminaryNetworkThrottling,
+        dynamicConfig->EnablePreliminaryNetworkThrottling);
+
     return config;
 }
 
@@ -670,6 +682,8 @@ void TInMemoryManagerConfig::Register(TRegistrar registrar)
         .Default(TWorkloadDescriptor(EWorkloadCategory::UserBatch));
     registrar.Parameter("preload_throttler", &TThis::PreloadThrottler)
         .Optional();
+    registrar.Parameter("enable_preliminary_network_throttling", &TThis::EnablePreliminaryNetworkThrottling)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -688,6 +702,8 @@ void TInMemoryManagerDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("heavy_rpc_timeout", &TThis::HeavyRpcTimeout)
         .Optional();
     registrar.Parameter("remote_send_batch_size", &TThis::RemoteSendBatchSize)
+        .Optional();
+    registrar.Parameter("enable_preliminary_network_throttling", &TThis::EnablePreliminaryNetworkThrottling)
         .Optional();
 }
 
@@ -844,24 +860,20 @@ void TStatisticsReporterConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("enable", &TThis::Enable)
         .Default(false);
-
-    registrar.Parameter("period", &TThis::Period)
-        .Default(TDuration::Seconds(10));
-    registrar.Parameter("splay", &TThis::Splay)
-        .Default(TDuration::MilliSeconds(5));
-    registrar.Parameter("jitter", &TThis::Jitter)
-        .Default(0.2)
-        .GreaterThanOrEqual(0)
-        .LessThanOrEqual(1);
-
-    registrar.Parameter("table_path", &TThis::TablePath)
-        .Default("//sys/tablet_balancer/performance_counters");
-
     registrar.Parameter("max_tablets_per_transaction", &TThis::MaxTabletsPerTransaction)
         .Default(10000)
         .GreaterThan(0);
     registrar.Parameter("report_backoff_time", &TThis::ReportBackoffTime)
         .Default(TDuration::Seconds(30));
+    registrar.Parameter("table_path", &TThis::TablePath)
+        .Default("//sys/tablet_balancer/performance_counters");
+
+    registrar.Parameter("periodic_options",&TThis::PeriodicOptions)
+        .Default({
+            .Period = TDuration::Seconds(10),
+            .Splay = TDuration::Seconds(5),
+            .Jitter = 0.2,
+        });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -869,6 +881,8 @@ void TStatisticsReporterConfig::Register(TRegistrar registrar)
 void TMediumThrottlersConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("enable_changelog_throttling", &TThis::EnableChangelogThrottling)
+        .Default(false);
+    registrar.Parameter("enable_blob_throttling", &TThis::EnableBlobThrottling)
         .Default(false);
     registrar.Parameter("throttle_timeout_fraction", &TThis::ThrottleTimeoutFraction)
         .Default(0.5);
@@ -900,6 +914,16 @@ void TCompressionDictionaryBuilderDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("max_concurrent_build_tasks", &TThis::MaxConcurrentBuildTasks)
         .GreaterThan(0)
         .Optional();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TErrorManagerConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("deduplication_cache_timeout", &TThis::DeduplicationCacheTimeout)
+        .Default(TDuration::Minutes(1));
+    registrar.Parameter("error_expiration_timeout", &TThis::ErrorExpirationTimeout)
+        .Default(TDuration::Minutes(30));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -964,10 +988,16 @@ void TTabletNodeDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("statistics_reporter", &TThis::StatisticsReporter)
         .DefaultNew();
 
+    registrar.Parameter("error_manager", &TThis::ErrorManager)
+        .DefaultNew();
+
     registrar.Parameter("enable_chunk_fragment_reader_throttling", &TThis::EnableChunkFragmentReaderThrottling)
         .Default(false);
 
     registrar.Parameter("medium_throttlers", &TThis::MediumThrottlers)
+        .DefaultNew();
+
+    registrar.Parameter("compression_dictionary_cache", &TThis::CompressionDictionaryCache)
         .DefaultNew();
 }
 
@@ -1040,6 +1070,9 @@ void TTabletNodeConfig::Register(TRegistrar registrar)
         .DefaultNew();
 
     registrar.Parameter("master_connector", &TThis::MasterConnector)
+        .DefaultNew();
+
+    registrar.Parameter("compression_dictionary_cache", &TThis::CompressionDictionaryCache)
         .DefaultNew();
 
     registrar.Preprocessor([] (TThis* config) {

@@ -20,11 +20,15 @@ namespace NYT::NQueryClient {
 using namespace NTableClient;
 using namespace NYTree;
 
+using NCodegen::EExecutionBackend;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 static const auto& Logger = QueryClientLogger;
 
 ////////////////////////////////////////////////////////////////////////////////
+
+// TODO(dtorilov): Consider enabling WebAssembly for column evaluators.
 
 TColumnEvaluatorPtr TColumnEvaluator::Create(
     const TTableSchemaPtr& schema,
@@ -52,6 +56,7 @@ TColumnEvaluatorPtr TColumnEvaluator::Create(
                 /*id*/ nullptr,
                 &column.Variables,
                 /*useCanonicalNullRelations*/ false,
+                /*executionBackend*/ EExecutionBackend::Native,
                 profilers)();
 
             column.EvaluatorInstance = column.EvaluatorImage.Instantiate();
@@ -66,8 +71,15 @@ TColumnEvaluatorPtr TColumnEvaluator::Create(
             const auto& aggregateName = *schema->Columns()[index].Aggregate();
             auto type = schema->Columns()[index].GetWireType();
             column.AggregateImage = CodegenAggregate(
-                GetBuiltinAggregateProfilers()->GetAggregate(aggregateName)->Profile({type}, type, type, aggregateName),
-                {type}, type);
+                GetBuiltinAggregateProfilers()->GetAggregate(aggregateName)->Profile(
+                    {type},
+                    type,
+                    type,
+                    aggregateName,
+                    /*executionBackend*/ EExecutionBackend::Native),
+                {type},
+                type,
+                /*executionBackend*/ EExecutionBackend::Native);
             column.AggregateInstance = column.AggregateImage.Instantiate();
             isAggregate[index] = true;
         }

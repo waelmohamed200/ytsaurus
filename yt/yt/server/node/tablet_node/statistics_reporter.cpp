@@ -20,6 +20,8 @@
 
 #include <yt/yt/core/concurrency/periodic_executor.h>
 
+#include <library/cpp/iterator/enumerate.h>
+
 namespace NYT::NTabletNode {
 
 using namespace NClusterNode;
@@ -91,16 +93,12 @@ void TStatisticsReporter::Reconfigure(const NClusterNode::TClusterNodeDynamicCon
 
     auto guard = Guard(Spinlock_);
     Enable_ = statisticsReporterConfig->Enable;
-    TablePath_ = statisticsReporterConfig->TablePath;
     MaxTabletsPerTransaction_ = statisticsReporterConfig->MaxTabletsPerTransaction;
     ReportBackoffTime_ = statisticsReporterConfig->ReportBackoffTime;
+    TablePath_ = statisticsReporterConfig->TablePath;
     guard.Release();
 
-    Executor_->SetOptions(TPeriodicExecutorOptions{
-        .Period = statisticsReporterConfig->Period,
-        .Splay = statisticsReporterConfig->Splay,
-        .Jitter = statisticsReporterConfig->Jitter,
-    });
+    Executor_->SetOptions(statisticsReporterConfig->PeriodicOptions);
 
     if (Started_ && enableChanged) {
         if (Enable_) {
@@ -181,7 +179,7 @@ void TStatisticsReporter::WriteRows(
     TRange<TUnversionedRow> rows,
     TRowBufferPtr&& rowBuffer)
 {
-    i64 reportedTabletCount = rows.size();
+    int reportedTabletCount = rows.size();
 
     YT_LOG_DEBUG("Started reporting tablet statistics batch (TabletCount: %v)",
         reportedTabletCount);
@@ -237,8 +235,17 @@ void TStatisticsReporter::ReportStatistics()
 
 void TStatisticsReporter::DoReportStatistics(const TYPath& tablePath, i64 maxTabletsPerTransaction)
 {
-    auto tabletSnapshotStore = Bootstrap_->GetTabletSnapshotStore();
-    const auto& tabletSnapshots = tabletSnapshotStore->GetTabletSnapshots();
+    THashMap<TTabletId, TTabletSnapshotPtr> tabletSnapshots;
+    for (auto&& tabletSnapshot : Bootstrap_->GetTabletSnapshotStore()->GetTabletSnapshots()) {
+        THashMap<TTabletId, TTabletSnapshotPtr>::insert_ctx context;
+        if (auto it = tabletSnapshots.find(tabletSnapshot->TabletId, context)) {
+            if (it->second->MountRevision < tabletSnapshot->MountRevision) {
+                it->second = std::move(tabletSnapshot);
+            }
+        } else {
+            tabletSnapshots.emplace_direct(context, tabletSnapshot->TabletId, std::move(tabletSnapshot));
+        }
+    }
 
     TRowBufferPtr rowBuffer;
     i64 rowsSize;
@@ -252,13 +259,8 @@ void TStatisticsReporter::DoReportStatistics(const TYPath& tablePath, i64 maxTab
     };
     resetRows(0);
 
-    for (i64 snapshotIndex = 0; snapshotIndex < ssize(tabletSnapshots); ++snapshotIndex) {
-        const auto& tabletSnapshot = tabletSnapshots[snapshotIndex];
-        const auto& latestTabletSnapshot = tabletSnapshotStore->FindLatestTabletSnapshot(tabletSnapshot->TabletId);
-
-        if (tabletSnapshot->MountRevision == latestTabletSnapshot->MountRevision) {
-            rows[rowsSize++] = MakeUnversionedRow(tabletSnapshot, rowBuffer);
-        }
+    for (const auto& [snapshotIndex, it] : Enumerate(tabletSnapshots)) {
+        rows[rowsSize++] = MakeUnversionedRow(it.second, rowBuffer);
 
         if (rowsSize == maxTabletsPerTransaction) {
             WriteRows(tablePath, MakeRange(rows, rowsSize), std::move(rowBuffer));

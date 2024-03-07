@@ -255,16 +255,16 @@ TOperationControllerBase::TOperationControllerBase(
     , Acl(operation->GetAcl())
     , ControllerEpoch(operation->GetControllerEpoch())
     , CancelableContext(New<TCancelableContext>())
-    , DiagnosableInvokerPool_(CreateFairShareInvokerPool(
+    , DiagnosableInvokerPool_(CreateEnumIndexedProfiledFairShareInvokerPool<EOperationControllerQueue>(
         CreateCodicilGuardedInvoker(
             CreateSerializedInvoker(Host->GetControllerThreadPoolInvoker(), "operation_controller_base"),
             Format(
                 "OperationId: %v\nAuthenticatedUser: %v",
                 OperationId,
                 AuthenticatedUser)),
-        TEnumTraits<EOperationControllerQueue>::GetDomainSize(),
         CreateFairShareCallbackQueue,
-        Config->InvokerPoolTotalTimeAggregationPeriod))
+        Config->InvokerPoolTotalTimeAggregationPeriod,
+        "OperationController"))
     , InvokerPool(DiagnosableInvokerPool_)
     , SuspendableInvokerPool(TransformInvokerPool(InvokerPool, CreateSuspendableInvoker))
     , CancelableInvokerPool(TransformInvokerPool(
@@ -1243,6 +1243,8 @@ TOperationControllerMaterializeResult TOperationControllerBase::SafeMaterialize(
 
         InitializeJobExperiment();
 
+        AlertManager_->StartPeriodicActivity();
+
         CustomMaterialize();
 
         InitializeHistograms();
@@ -1277,6 +1279,7 @@ TOperationControllerMaterializeResult TOperationControllerBase::SafeMaterialize(
             snapshot.Version = ToUnderlying(GetCurrentSnapshotVersion());
             snapshot.Blocks = {TSharedRef::FromString(stringStream.Str())};
             DoLoadSnapshot(snapshot);
+            AlertManager_->StartPeriodicActivity();
         }
 
         // Input chunk scraper initialization should be the last step to avoid races,
@@ -1292,7 +1295,6 @@ TOperationControllerMaterializeResult TOperationControllerBase::SafeMaterialize(
         ProgressBuildExecutor_->Start();
         ExecNodesCheckExecutor->Start();
         SuspiciousJobsYsonUpdater_->Start();
-        AlertManager_->StartPeriodicActivity();
         MinNeededResourcesSanityCheckExecutor->Start();
         ExecNodesUpdateExecutor->Start();
         CheckTentativeTreeEligibilityExecutor_->Start();
@@ -1511,7 +1513,7 @@ bool TOperationControllerBase::IsTransactionNeeded(ETransactionType type) const
 {
     switch (type) {
         case ETransactionType::Async:
-            return IsIntermediateLivePreviewSupported() || IsOutputLivePreviewSupported() || GetStderrTablePath();
+            return IsLegacyIntermediateLivePreviewSupported() || IsLegacyOutputLivePreviewSupported() || GetStderrTablePath();
         case ETransactionType::Input:
             return !GetInputTablePaths().empty() || HasUserJobFiles() || HasDiskRequestsWithSpecifiedAccount();
         case ETransactionType::Output:
@@ -1756,7 +1758,7 @@ void TOperationControllerBase::PickIntermediateDataCells()
 
     int intermediateDataCellCount = std::min<int>(Config->IntermediateOutputMasterCellCount, IntermediateOutputCellTagList.size());
     // TODO(max42, gritukan): Remove it when new live preview will be ready.
-    if (IsIntermediateLivePreviewSupported()) {
+    if (IsLegacyIntermediateLivePreviewSupported()) {
         intermediateDataCellCount = 1;
     }
 
@@ -2054,7 +2056,7 @@ THashSet<TChunkId> TOperationControllerBase::GetAliveIntermediateChunks() const
 
 void TOperationControllerBase::ReinstallLivePreview()
 {
-    if (IsOutputLivePreviewSupported()) {
+    if (IsLegacyOutputLivePreviewSupported()) {
         for (const auto& table : OutputTables_) {
             std::vector<TChunkTreeId> childIds;
             childIds.reserve(table->OutputChunkTreeIds.size());
@@ -2068,7 +2070,7 @@ void TOperationControllerBase::ReinstallLivePreview()
         }
     }
 
-    if (IsIntermediateLivePreviewSupported()) {
+    if (IsLegacyIntermediateLivePreviewSupported()) {
         std::vector<TChunkTreeId> childIds;
         childIds.reserve(ChunkOriginMap.size());
         for (const auto& [chunkId, job] : ChunkOriginMap) {
@@ -2479,7 +2481,7 @@ void TOperationControllerBase::LockOutputDynamicTables()
 
     THashMap<TCellTag, std::vector<TOutputTablePtr>> externalCellTagToTables;
     for (const auto& table : UpdatingTables_) {
-        if (table->Dynamic) {
+        if (table->Dynamic && !table->Path.GetOutputTimestamp()) {
             externalCellTagToTables[table->ExternalCellTag].push_back(table);
         }
     }
@@ -2845,7 +2847,7 @@ void TOperationControllerBase::AttachOutputChunks(const std::vector<TOutputTable
                 }
                 req = batchReq->add_attach_chunk_trees_subrequests();
                 ToProto(req->mutable_parent_id(), table->OutputChunkListId);
-                if (table->Dynamic && OperationType != EOperationType::RemoteCopy) {
+                if (table->Dynamic && OperationType != EOperationType::RemoteCopy && !table->Path.GetOutputTimestamp()) {
                     ToProto(req->mutable_transaction_id(), table->ExternalTransactionId);
                 }
             }
@@ -3356,10 +3358,9 @@ void TOperationControllerBase::OnJobFailed(std::unique_ptr<TFailedJobSummary> jo
         return;
     }
 
-    const auto& result = jobSummary->GetJobResult();
+    auto error = jobSummary->GetError();
 
     TJobFinishedResult taskJobResult;
-    TError error;
 
     {
         // NB: We want to process finished job changes atomically.
@@ -3372,8 +3373,6 @@ void TOperationControllerBase::OnJobFailed(std::unique_ptr<TFailedJobSummary> jo
             ShouldUpdateLightOperationAttributes_ = true;
             ShouldUpdateProgressAttributesInCypress_ = true;
         }
-
-        error = FromProto<TError>(result.error());
 
         UpdateJobletFromSummary(*jobSummary, joblet);
 
@@ -3423,16 +3422,18 @@ void TOperationControllerBase::OnJobFailed(std::unique_ptr<TFailedJobSummary> jo
     if (FailedJobCount_ >= maxFailedJobCount) {
         auto failedJobsLimitExceededError = TError(NScheduler::EErrorCode::MaxFailedJobsLimitExceeded, "Failed jobs limit exceeded")
                 << TErrorAttribute("max_failed_job_count", maxFailedJobCount);
-        if (IsFailingByTimeout()) {
-            error = GetTimeLimitError()
-                << failedJobsLimitExceededError
-                << error;
-        } else {
-            error = failedJobsLimitExceededError
-                << error;
-        }
+        auto operationFailedError = [&] {
+            if (IsFailingByTimeout()) {
+                return GetTimeLimitError()
+                    << failedJobsLimitExceededError
+                    << error;
+            } else {
+                return failedJobsLimitExceededError
+                    << error;
+            }
+        }();
 
-        OnOperationFailed(error);
+        OnOperationFailed(operationFailedError);
         return;
     }
 
@@ -3505,11 +3506,13 @@ void TOperationControllerBase::OnJobAborted(std::unique_ptr<TAbortedJobSummary> 
         if (wasScheduled) {
             if (joblet->ShouldLogFinishedEvent()) {
                 auto fluent = LogFinishedJobFluently(ELogEventType::JobAborted, joblet)
-                    .Item("reason").Value(abortReason);
-                if (jobSummary->PreemptedFor) {
-                    fluent
-                        .Item("preempted_for").Value(jobSummary->PreemptedFor);
-                }
+                    .Item("reason").Value(abortReason)
+                    .DoIf(jobSummary->Error.has_value(), [&] (TFluentMap fluent) {
+                        fluent.Item("error").Value(jobSummary->Error);
+                    })
+                    .DoIf(jobSummary->PreemptedFor.has_value(), [&] (TFluentMap fluent) {
+                        fluent.Item("preempted_for").Value(jobSummary->PreemptedFor);
+                    });
             }
             UpdateAggregatedFinishedJobStatistics(joblet, *jobSummary);
         }
@@ -3576,8 +3579,7 @@ bool TOperationControllerBase::WasJobGracefullyAborted(const std::unique_ptr<TAb
         return false;
     }
 
-    auto error = FromProto<TError>(jobSummary->Result->error());
-
+    const auto& error = jobSummary->GetError();
     if (auto innerError = error.FindMatching(NExecNode::EErrorCode::AbortByControllerAgent)) {
         return innerError->Attributes().Get("graceful_abort", false);
     }
@@ -3772,7 +3774,10 @@ void TOperationControllerBase::SafeInterruptJobByUserRequest(TJobId jobId, TDura
 {
     VERIFY_INVOKER_AFFINITY(CancelableInvokerPool->GetInvoker(Config->JobEventsControllerQueue));
 
-    YT_LOG_DEBUG("Interrupting job (JobId: %v, Timeout: %v)", jobId, timeout);
+    YT_LOG_DEBUG(
+        "Interrupting job (JobId: %v, Timeout: %v)",
+        jobId,
+        timeout);
 
     if (State != EControllerState::Running) {
         THROW_ERROR_EXCEPTION(
@@ -3845,11 +3850,12 @@ void TOperationControllerBase::BuildFinishedJobAttributes(
 
     BuildJobAttributes(joblet, jobSummary->State, stderrSize, fluent);
 
+    bool includeError = jobSummary->State == EJobState::Failed ||
+        jobSummary->State == EJobState::Aborted;
     fluent
         .Item("finish_time").Value(joblet->FinishTime)
-        .DoIf(jobSummary->State == EJobState::Failed, [&] (TFluentMap fluent) {
-            auto error = FromProto<TError>(jobSummary->Result->error());
-            fluent.Item("error").Value(error);
+        .DoIf(includeError, [&] (TFluentMap fluent) {
+            fluent.Item("error").Value(jobSummary->GetError());
         })
         .DoIf(jobSummary->GetJobResult().HasExtension(TJobResultExt::job_result_ext),
             [&] (TFluentMap fluent)
@@ -3976,7 +3982,7 @@ void TOperationControllerBase::SafeOnInputChunkLocated(
     YT_VERIFY(!descriptor.InputChunks.empty());
 
     const auto& chunkSpec = descriptor.InputChunks.front();
-    auto codecId = NErasure::ECodec(chunkSpec->GetErasureCodec());
+    auto codecId = chunkSpec->GetErasureCodec();
 
     if (IsUnavailable(replicas, codecId, GetChunkAvailabilityPolicy())) {
         OnInputChunkUnavailable(chunkId, &descriptor);
@@ -4188,18 +4194,28 @@ bool TOperationControllerBase::AreForeignTablesSupported() const
     return false;
 }
 
-bool TOperationControllerBase::IsOutputLivePreviewSupported() const
+bool TOperationControllerBase::IsLegacyOutputLivePreviewSupported() const
 {
     return !IsLegacyLivePreviewSuppressed &&
         (GetLegacyOutputLivePreviewMode() == ELegacyLivePreviewMode::DoNotCare ||
         GetLegacyOutputLivePreviewMode() == ELegacyLivePreviewMode::ExplicitlyEnabled);
 }
 
-bool TOperationControllerBase::IsIntermediateLivePreviewSupported() const
+bool TOperationControllerBase::IsOutputLivePreviewSupported() const
+{
+    return !OutputTables_.empty();
+}
+
+bool TOperationControllerBase::IsLegacyIntermediateLivePreviewSupported() const
 {
     return !IsLegacyLivePreviewSuppressed &&
         (GetLegacyIntermediateLivePreviewMode() == ELegacyLivePreviewMode::DoNotCare ||
         GetLegacyIntermediateLivePreviewMode() == ELegacyLivePreviewMode::ExplicitlyEnabled);
+}
+
+bool TOperationControllerBase::IsIntermediateLivePreviewSupported() const
+{
+    return false;
 }
 
 ELegacyLivePreviewMode TOperationControllerBase::GetLegacyOutputLivePreviewMode() const
@@ -5728,6 +5744,11 @@ void TOperationControllerBase::SuppressLivePreviewIfNeeded()
         }
     }
 
+    if (IntermediateOutputCellTagList.size() != 1 && IsLegacyIntermediateLivePreviewSupported() && suppressionErrors.empty()) {
+        suppressionErrors.emplace_back(TError(
+            "Legacy live preview appears to have been disabled in the controller agents config when the operation started."));
+    }
+
     IsLegacyLivePreviewSuppressed = !suppressionErrors.empty();
     if (IsLegacyLivePreviewSuppressed) {
         auto combinedSuppressionError = TError("Legacy live preview is suppressed due to the following reasons")
@@ -5760,6 +5781,12 @@ void TOperationControllerBase::CreateLivePreviewTables()
         const TYsonString& acl,
         const TTableSchemaPtr& schema)
     {
+        if (!AsyncTransaction) {
+            YT_LOG_INFO("Creating transaction required for the legacy live preview (Type: %v)", ETransactionType::Async);
+            AsyncTransaction = WaitFor(StartTransaction(ETransactionType::Async, Client))
+                .ValueOrThrow();
+        }
+
         auto req = TCypressYPathProxy::Create(path);
         req->set_type(ToProto<int>(EObjectType::Table));
         req->set_ignore_existing(true);
@@ -5795,7 +5822,7 @@ void TOperationControllerBase::CreateLivePreviewTables()
         batchReq->AddRequest(req, key);
     };
 
-    if (IsOutputLivePreviewSupported()) {
+    if (IsLegacyOutputLivePreviewSupported()) {
         YT_LOG_INFO("Creating live preview for output tables");
 
         for (int index = 0; index < std::ssize(OutputTables_); ++index) {
@@ -5836,9 +5863,7 @@ void TOperationControllerBase::CreateLivePreviewTables()
             StderrTable_->TableUploadOptions.TableSchema.Get());
     }
 
-    if (GetLegacyIntermediateLivePreviewMode() == ELegacyLivePreviewMode::DoNotCare ||
-        GetLegacyIntermediateLivePreviewMode() == ELegacyLivePreviewMode::ExplicitlyEnabled)
-    {
+    if (IsIntermediateLivePreviewSupported()) {
         auto name = "intermediate";
         IntermediateTable->LivePreviewTableName = name;
         (*LivePreviews_)[name] = New<TLivePreview>(
@@ -5852,7 +5877,7 @@ void TOperationControllerBase::CreateLivePreviewTables()
         RegisterLivePreviewTable("core", CoreTable_);
     }
 
-    if (IsIntermediateLivePreviewSupported()) {
+    if (IsLegacyIntermediateLivePreviewSupported()) {
         YT_LOG_INFO("Creating live preview for intermediate table");
 
         auto path = GetOperationPath(OperationId) + "/intermediate";
@@ -5884,7 +5909,7 @@ void TOperationControllerBase::CreateLivePreviewTables()
         table.LivePreviewTableId = FromProto<NCypressClient::TNodeId>(rsp->node_id());
     };
 
-    if (IsOutputLivePreviewSupported()) {
+    if (IsLegacyOutputLivePreviewSupported()) {
         auto rspsOrError = batchRsp->GetResponses<TCypressYPathProxy::TRspCreate>("create_output");
         YT_VERIFY(rspsOrError.size() == OutputTables_.size());
 
@@ -5902,7 +5927,7 @@ void TOperationControllerBase::CreateLivePreviewTables()
         YT_LOG_INFO("Live preview for stderr table created");
     }
 
-    if (IsIntermediateLivePreviewSupported()) {
+    if (IsLegacyIntermediateLivePreviewSupported()) {
         auto rsp = batchRsp->GetResponse<TCypressYPathProxy::TRspCreate>("create_intermediate");
         handleResponse(*IntermediateTable, rsp.Value());
 
@@ -6462,8 +6487,10 @@ void TOperationControllerBase::GetInputTablesAttributes()
 
         // TODO(ifsmirnov): YT-20044
         if (table->Schema->HasHunkColumns() && OperationType == EOperationType::RemoteCopy) {
-            THROW_ERROR_EXCEPTION("Table with hunk columns cannot be copied to another cluster")
-                << TErrorAttribute("table_path", table->Path);
+            if (!Spec_->BypassHunkRemoteCopyProhibition.value_or(false)) {
+                THROW_ERROR_EXCEPTION("Table with hunk columns cannot be copied to another cluster")
+                    << TErrorAttribute("table_path", table->Path);
+            }
         }
     }
 
@@ -6561,11 +6588,6 @@ void TOperationControllerBase::GetOutputTablesSchema()
                     << TErrorAttribute("table_path", path);
             }
 
-            if (path.GetOutputTimestamp()) {
-                THROW_ERROR_EXCEPTION("Cannot set \"output_timestamp\" attribute to the dynamic table")
-                    << TErrorAttribute("table_path", path);
-            }
-
             // Check if bulk insert is enabled for a certain user.
             if (!Config->EnableBulkInsertForEveryone && OperationType != EOperationType::RemoteCopy) {
                 TGetNodeOptions options;
@@ -6585,6 +6607,9 @@ void TOperationControllerBase::GetOutputTablesSchema()
         }
 
         if (path.GetOutputTimestamp()) {
+            if (table->Dynamic && table->TableUploadOptions.SchemaModification != ETableSchemaModification::None) {
+                THROW_ERROR_EXCEPTION("Cannot set \"output_timestamp\" attribute to the dynamic table with nontrivial schema modification");
+            }
             auto outputTimestamp = *path.GetOutputTimestamp();
             if (outputTimestamp < MinTimestamp || outputTimestamp > MaxTimestamp) {
                 THROW_ERROR_EXCEPTION("Attribute \"output_timestamp\" value is out of range [%v, %v]",
@@ -8465,7 +8490,7 @@ void TOperationControllerBase::RegisterLivePreviewTable(TString name, const TOut
 
 void TOperationControllerBase::AttachToIntermediateLivePreview(TInputChunkPtr chunk)
 {
-    if (IsIntermediateLivePreviewSupported()) {
+    if (IsLegacyIntermediateLivePreviewSupported()) {
         AttachToLivePreview(chunk->GetChunkId(), IntermediateTable->LivePreviewTableId);
     }
     AttachToLivePreview(IntermediateTable->LivePreviewTableName, chunk);
@@ -8648,7 +8673,7 @@ void TOperationControllerBase::RegisterTeleportChunk(
         table->OutputChunks.push_back(chunk);
     }
 
-    if (IsOutputLivePreviewSupported()) {
+    if (IsLegacyOutputLivePreviewSupported()) {
         AttachToLivePreview(chunk->GetChunkId(), table->LivePreviewTableId);
     }
     AttachToLivePreview(table->LivePreviewTableName, chunk);
@@ -9222,11 +9247,16 @@ void TOperationControllerBase::BuildProgress(TFluentMap fluent) const
             .Item("data_slice_count").Value(GetDataSliceCount())
         .EndMap()
         .Item("live_preview").BeginMap()
-            .Item("output_supported").Value(IsOutputLivePreviewSupported())
-            .Item("intermediate_supported").Value(IsIntermediateLivePreviewSupported())
+            .Item("output_supported").Value(IsLegacyOutputLivePreviewSupported())
+            .Item("intermediate_supported").Value(IsLegacyIntermediateLivePreviewSupported())
             .Item("stderr_supported").Value(static_cast<bool>(StderrTable_))
             .Item("core_supported").Value(static_cast<bool>(CoreTable_))
-            .Item("virtual_table_format_supported").Value(static_cast<bool>(LivePreviews_))
+            .Item("virtual_table_format").BeginMap()
+                .Item("output_supported").Value(IsOutputLivePreviewSupported())
+                .Item("intermediate_supported").Value(IsIntermediateLivePreviewSupported())
+                .Item("stderr_supported").Value(static_cast<bool>(StderrTable_))
+                .Item("core_supported").Value(static_cast<bool>(CoreTable_))
+            .EndMap()
         .EndMap()
         .Item("schedule_job_statistics").BeginMap()
             .Item("count").Value(ScheduleAllocationStatistics_->GetCount())
@@ -9872,6 +9902,7 @@ void TOperationControllerBase::InitUserJobSpecTemplate(
     jobSpec->set_copy_files(jobSpecConfig->CopyFiles);
     jobSpec->set_debug_artifacts_account(debugArtifactsAccount);
     jobSpec->set_set_container_cpu_limit(jobSpecConfig->SetContainerCpuLimit || Options->SetContainerCpuLimit);
+    jobSpec->set_redirect_stdout_to_stderr(jobSpecConfig->RedirectStdoutToStderr);
 
     // This is common policy for all operations of given type.
     if (Options->SetContainerCpuLimit) {
@@ -10035,12 +10066,32 @@ void TOperationControllerBase::InitUserJobSpec(
         joblet->EstimatedResourceUsage.GetFootprintMemory() +
         joblet->EstimatedResourceUsage.GetJobProxyMemory() * joblet->JobProxyMemoryReserveFactor.value());
 
+    if (Options->SetSlotContainerMemoryLimit) {
+        jobSpec->set_slot_container_memory_limit(
+            jobSpec->memory_limit() +
+            joblet->EstimatedResourceUsage.GetJobProxyMemory() +
+            joblet->EstimatedResourceUsage.GetFootprintMemory() +
+            Options->SlotContainerMemoryOverhead);
+    }
+
     jobSpec->add_environment(Format("YT_JOB_INDEX=%v", joblet->JobIndex));
     jobSpec->add_environment(Format("YT_TASK_JOB_INDEX=%v", joblet->TaskJobIndex));
     jobSpec->add_environment(Format("YT_JOB_ID=%v", joblet->JobId));
     jobSpec->add_environment(Format("YT_JOB_COOKIE=%v", joblet->OutputCookie));
     if (joblet->StartRowIndex >= 0) {
         jobSpec->add_environment(Format("YT_START_ROW_INDEX=%v", joblet->StartRowIndex));
+    }
+
+    if (joblet->EnabledJobProfiler && joblet->EnabledJobProfiler->Type == EProfilerType::Cuda) {
+        auto cudaProfilerEnvironment = Spec_->CudaProfilerEnvironment
+            ? Spec_->CudaProfilerEnvironment
+            : Config->CudaProfilerEnvironment;
+
+        if (cudaProfilerEnvironment) {
+            jobSpec->add_environment(Format("%v=%v",
+                cudaProfilerEnvironment->PathEnvironmentVariableName,
+                cudaProfilerEnvironment->PathEnvironmentVariableValue));
+        }
     }
 
     if (SecureVault) {
@@ -10284,7 +10335,7 @@ void TOperationControllerBase::InferSchemaFromInput(const TSortColumns& sortColu
     auto replaceStableNamesWithNames = [] (const TTableSchemaPtr& schema) {
         auto newColumns = schema->Columns();
         for (auto& newColumn : newColumns) {
-            newColumn.SetStableName(TStableName(newColumn.Name()));
+            newColumn.SetStableName(TColumnStableName(newColumn.Name()));
         }
         return New<TTableSchema>(std::move(newColumns), schema->GetStrict(), schema->IsUniqueKeys());
     };
@@ -10970,6 +11021,18 @@ std::vector<TRichYPath> TOperationControllerBase::GetLayerPaths(
         // If cuda toolkit is requested, add the layer as the topmost user layer.
         auto path = *Config->GpuCheckLayerDirectoryPath + "/" + *userJobSpec->GpuCheckLayerName;
         layerPaths.insert(layerPaths.begin(), path);
+    }
+    if (userJobSpec->Profilers) {
+        for (const auto& profilerSpec : *userJobSpec->Profilers) {
+            auto cudaProfilerLayerPath = Spec_->CudaProfilerLayerPath
+                ? Spec_->CudaProfilerLayerPath
+                : Config->CudaProfilerLayerPath;
+
+            if (cudaProfilerLayerPath && profilerSpec->Type == EProfilerType::Cuda) {
+                layerPaths.insert(layerPaths.begin(), *cudaProfilerLayerPath);
+                break;
+            }
+        }
     }
     if (!layerPaths.empty()) {
         auto systemLayerPath = userJobSpec->SystemLayerPath

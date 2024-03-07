@@ -76,7 +76,7 @@ private:
 
 struct TDynamicAttributes
 {
-    //! Precomputed in dynamic attributes snapshot and updated after a allocation is scheduled or the usage is stale.
+    //! Precomputed in dynamic attributes snapshot and updated after an allocation is scheduled or the usage is stale.
     // NB(eshcherbin): Never change this field directly, use special dynamic attributes manager's methods instead.
     TJobResources ResourceUsage;
     NProfiling::TCpuInstant ResourceUsageUpdateTime;
@@ -470,11 +470,11 @@ private:
         TSchedulerOperationElement* element,
         TJobResources* precommittedResourcesOutput,
         TJobResources* availableResourcesOutput,
-        NNodeTrackerClient::NProto::TDiskResources* availableDiskResourcesOutput);
+        TDiskResources* availableDiskResourcesOutput);
     TControllerScheduleAllocationResultPtr DoScheduleAllocation(
         TSchedulerOperationElement* element,
         const TJobResources& availableResources,
-        const NNodeTrackerClient::NProto::TDiskResources& availableDiskResources,
+        const TDiskResources& availableDiskResources,
         TJobResources* precommittedResources);
     void FinishScheduleAllocation(TSchedulerOperationElement* element);
 

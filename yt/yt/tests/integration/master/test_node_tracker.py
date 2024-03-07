@@ -62,10 +62,10 @@ class TestNodeTracker(YTEnvSetup):
         create("table", "//tmp/t")
         write_table("//tmp/t", {"a": "b"})
 
-        maintenances = {
-            node: add_maintenance("cluster_node", node, "disable_write_sessions", "test")
-            for node in nodes
-        }
+        maintenances = {}
+        for node in nodes:
+            maintenances.update(
+                add_maintenance("cluster_node", node, "disable_write_sessions", "test"))
 
         def can_write():
             try:
@@ -195,10 +195,9 @@ class TestNodeTracker(YTEnvSetup):
             wait(lambda: get("//sys/cluster_nodes/{0}/@resource_limits/user_slots".format(node)) > 0)
         wait(lambda: can_write())
 
-        maintenances = {
-            node: add_maintenance("cluster_node", node, "decommission", "test")
-            for node in nodes
-        }
+        maintenances = {}
+        for node in nodes:
+            maintenances.update(add_maintenance("cluster_node", node, "decommission", "test"))
 
         for node in nodes:
             wait(lambda: get("//sys/cluster_nodes/{0}/@resource_limits/user_slots".format(node)) == 0)
@@ -432,6 +431,9 @@ class TestReregisterNode(YTEnvSetup):
             cls.FIRST_CONFIG = config
         else:
             cls.SECOND_CONFIG = config
+
+    def teardown_method(self, method):
+        super(TestReregisterNode, self).teardown_method(method, wait_for_nodes=False)
 
     @authors("aleksandra-zh")
     def test_reregister_node_with_different_address(self):

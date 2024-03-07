@@ -4,6 +4,8 @@
 #include "cell_base.h"
 #include "tamed_cell_manager.h"
 
+#include <yt/yt/server/master/cell_master/config.h>
+#include <yt/yt/server/master/cell_master/config_manager.h>
 #include <yt/yt/server/master/cell_master/bootstrap.h>
 
 #include <yt/yt/server/master/cypress_server/node_detail.h>
@@ -30,17 +32,43 @@ using namespace NCellarClient;
 
 ////////////////////////////////////////////////////////////////////////////////
 
+namespace {
+
+EObjectType BundleMapObjectTypeFromCellarType(ECellarType cellarType)
+{
+    switch (cellarType) {
+        case ECellarType::Tablet:
+            return EObjectType::TabletCellBundleMap;
+        case ECellarType::Chaos:
+            return EObjectType::ChaosCellBundleMap;
+        default:
+            YT_ABORT();
+    }
+}
+
+EObjectType VirtualCellMapObjectTypeFromCellarType(ECellarType cellarType)
+{
+    switch (cellarType) {
+        case ECellarType::Tablet:
+            return EObjectType::VirtualTabletCellMap;
+        case ECellarType::Chaos:
+            return EObjectType::VirtualChaosCellMap;
+        default:
+            YT_ABORT();
+    }
+}
+
+} // namespace
+
+////////////////////////////////////////////////////////////////////////////////
+
 class TVirtualAreaMap
-    : public TVirtualMapBase
+    : public TVirtualSinglecellMapBase
 {
 public:
-    explicit TVirtualAreaMap(TBootstrap* bootstrap)
-        : Bootstrap_(bootstrap)
-    { }
+    using TVirtualSinglecellMapBase::TVirtualSinglecellMapBase;
 
 private:
-    TBootstrap* const Bootstrap_;
-
     std::vector<TString> GetKeys(i64 sizeLimit) const override
     {
         const auto& cellManager = Bootstrap_->GetTamedCellManager();
@@ -97,7 +125,10 @@ public:
         const IYPathServiceContextPtr& context) override
     {
         const auto& method = context->GetMethod();
-        if (method == "Remove") {
+        const auto& config = Bootstrap_->GetConfigManager()->GetConfig()->TabletManager->CellHydraPersistenceSynchronizer;
+        if (!config->MigrateToVirtualCellMaps &&
+            method == "Remove")
+        {
             return TResolveResultThere{GetTargetProxy(), path};
         } else {
             return TCypressMapNodeProxy::ResolveSelf(path, context);
@@ -167,16 +198,15 @@ INodeTypeHandlerPtr CreateCellNodeTypeHandler(TBootstrap* bootstrap)
 ////////////////////////////////////////////////////////////////////////////////
 
 class TVirtualCellBundleMap
-    : public TVirtualMapBase
+    : public TVirtualSinglecellMapBase
 {
 public:
     TVirtualCellBundleMap(TBootstrap* bootstrap, ECellarType cellarType)
-        : Bootstrap_(bootstrap)
+        : TVirtualSinglecellMapBase(bootstrap)
         , CellarType_(cellarType)
     { }
 
 private:
-    TBootstrap* const Bootstrap_;
     const ECellarType CellarType_;
 
     std::vector<TString> GetKeys(i64 sizeLimit) const override
@@ -204,18 +234,81 @@ private:
     }
 };
 
+////////////////////////////////////////////////////////////////////////////////
+
 INodeTypeHandlerPtr CreateCellBundleMapTypeHandler(
     TBootstrap* bootstrap,
-    ECellarType cellarType,
-    EObjectType cellBundleMapType)
+    ECellarType cellarType)
 {
     YT_VERIFY(bootstrap);
 
     return CreateVirtualTypeHandler(
         bootstrap,
-        cellBundleMapType,
+        BundleMapObjectTypeFromCellarType(cellarType),
         BIND_NO_PROPAGATE([=] (INodePtr /*owningNode*/) -> IYPathServicePtr {
             return New<TVirtualCellBundleMap>(bootstrap, cellarType);
+        }),
+        EVirtualNodeOptions::RedirectSelf);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TVirtualCellMap
+    : public TVirtualMapBase
+{
+public:
+    TVirtualCellMap(TBootstrap* bootstrap, ECellarType cellarType)
+        : Bootstrap_(bootstrap)
+        , CellarType_(cellarType)
+    { }
+
+private:
+    TBootstrap* const Bootstrap_;
+    const ECellarType CellarType_;
+
+    std::vector<TString> GetKeys(i64 sizeLimit) const override
+    {
+        const auto& cellManager = Bootstrap_->GetTamedCellManager();
+        auto cells = GetItems(cellManager->Cells(CellarType_), sizeLimit);
+        std::vector<TString> result;
+        result.reserve(cells.size());
+        for (const auto& cell : cells) {
+            result.push_back(Format("%v", cell->GetId()));
+        }
+        return result;
+    }
+
+    i64 GetSize() const override
+    {
+        const auto& cellManager = Bootstrap_->GetTamedCellManager();
+        return std::ssize(cellManager->Cells(CellarType_));
+    }
+
+    IYPathServicePtr FindItemService(TStringBuf key) const override
+    {
+        const auto& cellManager = Bootstrap_->GetTamedCellManager();
+        auto* cell = cellManager->FindCell(TTamedCellId::FromString(key));
+        if (!IsObjectAlive(cell)) {
+            return nullptr;
+        }
+        const auto& objectManager = Bootstrap_->GetObjectManager();
+        return objectManager->GetProxy(cell);
+    }
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+INodeTypeHandlerPtr CreateVirtualCellMapTypeHandler(
+    TBootstrap* bootstrap,
+    ECellarType cellarType)
+{
+    YT_VERIFY(bootstrap);
+
+    return CreateVirtualTypeHandler(
+        bootstrap,
+        VirtualCellMapObjectTypeFromCellarType(cellarType),
+        BIND_NO_PROPAGATE([=] (INodePtr /*owningNode*/) -> IYPathServicePtr {
+            return New<TVirtualCellMap>(bootstrap, cellarType);
         }),
         EVirtualNodeOptions::RedirectSelf);
 }

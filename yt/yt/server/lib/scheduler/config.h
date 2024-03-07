@@ -437,6 +437,8 @@ public:
 
     bool EnableGuaranteePriorityScheduling;
 
+    THashSet<EJobResourceType> NecessaryResourcesForOperation;
+
     REGISTER_YSON_STRUCT(TFairShareStrategyTreeConfig);
 
     static void Register(TRegistrar registrar);
@@ -974,6 +976,8 @@ public:
     bool CrashOnAllocationHeartbeatProcessingException;
 
     int MinRequiredArchiveVersion;
+
+    NRpc::TServerDynamicConfigPtr RpcServer;
 
     REGISTER_YSON_STRUCT(TSchedulerConfig);
 

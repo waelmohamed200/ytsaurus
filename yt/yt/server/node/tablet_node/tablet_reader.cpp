@@ -292,6 +292,7 @@ ISchemafulUnversionedReaderPtr WrapSchemafulTabletReader(
         tabletSnapshot->Settings.HunkReaderConfig,
         std::move(reader),
         tabletSnapshot->ChunkFragmentReader,
+        tabletSnapshot->DictionaryCompressionFactory,
         chunkReadOptions);
 
     return reader;
@@ -390,24 +391,24 @@ ISchemafulUnversionedReaderPtr CreateSchemafulSortedTabletReader(
         boundaries.push_back(store->GetMinKey());
     }
 
-    TColumnFilter enrichedColumnFilter;
-    if (!columnFilter.IsUniversal()) {
-        auto indexes = columnFilter.GetIndexes();
-        auto keyColumnCount = tabletSnapshot->QuerySchema->GetKeyColumnCount();
-
-        for (int index = 0; index < keyColumnCount; ++index) {
-            indexes.push_back(index);
-        }
-
-        std::sort(indexes.begin(), indexes.end());
-        indexes.erase(std::unique(indexes.begin(), indexes.end()), indexes.end());
-
-        enrichedColumnFilter = TColumnFilter(std::move(indexes));
-    }
-
     ISchemafulUnversionedReaderPtr reader;
 
     if (mergeVersionedRows) {
+        TColumnFilter enrichedColumnFilter;
+        if (!columnFilter.IsUniversal()) {
+            auto indexes = columnFilter.GetIndexes();
+            auto keyColumnCount = tabletSnapshot->QuerySchema->GetKeyColumnCount();
+
+            for (int index = 0; index < keyColumnCount; ++index) {
+                indexes.push_back(index);
+            }
+
+            std::sort(indexes.begin(), indexes.end());
+            indexes.erase(std::unique(indexes.begin(), indexes.end()), indexes.end());
+
+            enrichedColumnFilter = TColumnFilter(std::move(indexes));
+        }
+
         auto rowMerger = std::make_unique<TSchemafulRowMerger>(
             New<TRowBuffer>(TTabletReaderPoolTag()),
             tabletSnapshot->QuerySchema->GetColumnCount(),
@@ -463,7 +464,7 @@ ISchemafulUnversionedReaderPtr CreateSchemafulSortedTabletReader(
                     boundsPerStore[index],
                     timestamp,
                     /*produceAllVersions*/ false,
-                    enrichedColumnFilter,
+                    columnFilter,
                     chunkReadOptions,
                     workloadCategory),
                 std::move(rowMerger));

@@ -1657,16 +1657,18 @@ class TestClientConfigFromCluster(object):
 
         ret_default = 0
         ret_experiment_20 = 0
-        for i in range(20):
-            yt.default_config.RemotePatchableValueBase._REMOTE_CACHE = {}
-            client = yt.YtClient(config={"proxy": {"url": client.config["proxy"]["url"]}, "config_remote_patch_path": client.config["config_remote_patch_path"]})
-            if str(client.config["proxy"]["operation_link_pattern"]) == "zzz":
-                ret_default += 1
-            elif str(client.config["proxy"]["operation_link_pattern"]) == "mmm":
-                ret_experiment_20 += 1
-        assert ret_default + ret_experiment_20 == 20
-        assert ret_experiment_20 > 0
-        assert ret_experiment_20 < 10
+        randoms = [19, 19, 21, 21, 21, 50]
+
+        while len(randoms):
+            with mock.patch('random.randrange', lambda size: randoms.pop()):
+                yt.default_config.RemotePatchableValueBase._REMOTE_CACHE = {}
+                client = yt.YtClient(config={"proxy": {"url": client.config["proxy"]["url"]}, "config_remote_patch_path": client.config["config_remote_patch_path"]})
+                if str(client.config["proxy"]["operation_link_pattern"]) == "zzz":
+                    ret_default += 1
+                elif str(client.config["proxy"]["operation_link_pattern"]) == "mmm":
+                    ret_experiment_20 += 1
+        assert ret_default + ret_experiment_20 == 6
+        assert ret_experiment_20 == 2
         del client
 
     @authors("denvr")
@@ -1723,3 +1725,19 @@ class TestClientConfigFromCluster(object):
         assert type(config["proxy"]["enable_proxy_discovery"]) == bool
         assert config["proxy"]["enable_proxy_discovery"]
         yt.remove(config_remote_patch_path, recursive=True, force=True)
+
+    @authors("pechatnov")
+    def test_proxy_aliases_config(self):
+        node_path = "//test_proxy_aliases_config_node"
+
+        original_client = yt.YtClient(config={"proxy": {"url": yt.config.config["proxy"]["url"]}})
+        original_client.set(node_path, "value")
+
+        manual_alias_client = yt.YtClient(config={"proxy": {"url": "cluster-name", "aliases": {"cluster-name": yt.config.config["proxy"]["url"]}}})
+        assert manual_alias_client.get(node_path) == "value"
+
+        # Env was set by YT recipe.
+        config = deepcopy(yt.default_config.get_config_from_env())
+        config["proxy"]["url"] = str(original_client.get("//sys/@cluster_name"))
+        env_alias_client = yt.YtClient(config=config)
+        assert env_alias_client.get(node_path) == "value"

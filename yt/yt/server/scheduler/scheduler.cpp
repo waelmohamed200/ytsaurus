@@ -23,8 +23,6 @@
 #include <yt/yt/ytlib/scheduler/helpers.h>
 #include <yt/yt/ytlib/scheduler/job_resources_helpers.h>
 
-#include <yt/yt/ytlib/program/helpers.h>
-
 #include <yt/yt/client/security_client/acl.h>
 
 #include <yt/yt/ytlib/node_tracker_client/channel.h>
@@ -370,6 +368,18 @@ public:
         VERIFY_THREAD_AFFINITY_ANY();
 
         return CachedExecNodeDescriptors_.Acquire();
+    }
+
+    TSharedRef GetCachedProtoExecNodeDescriptors() const
+    {
+        VERIFY_THREAD_AFFINITY_ANY();
+
+        auto cachedExecNodeDescriptors = CachedSerializedExecNodeDescriptors_.Acquire();
+
+        return
+            cachedExecNodeDescriptors ?
+            cachedExecNodeDescriptors->ExecNodeDescriptors :
+            TSharedRef::MakeEmpty();
     }
 
     const TSchedulerConfigPtr& GetConfig() const
@@ -1036,7 +1046,7 @@ public:
         {
             ValidateOperationRuntimeParametersUpdate(operation, update);
             auto newParams = UpdateRuntimeParameters(operation->GetRuntimeParameters(), update, operation->GetAuthenticatedUser());
-            WaitFor(Strategy_->ValidateOperationRuntimeParameters(operation.Get(), newParams, /* validatePools */ update->ContainsPool()))
+            WaitFor(Strategy_->ValidateOperationRuntimeParameters(operation.Get(), newParams, /*validatePools*/ update->ContainsPool()))
                 .ThrowOnError();
             if (auto delay = operation->Spec()->TestingOperationOptions->DelayInsideValidateRuntimeParameters) {
                 TDelayedExecutor::WaitForDuration(*delay);
@@ -1046,7 +1056,7 @@ public:
         // We recalculate params, since original runtime params may change during asynchronous validation.
         auto newParams = UpdateRuntimeParameters(operation->GetRuntimeParameters(), update, operation->GetAuthenticatedUser());
         if (update->ContainsPool()) {
-            Strategy_->ValidatePoolLimits(operation.Get(), newParams);
+            Strategy_->ValidatePoolLimitsOnPoolChange(operation.Get(), newParams);
         }
         operation->SetRuntimeParameters(newParams);
         Strategy_->ApplyOperationRuntimeParameters(operation.Get());
@@ -1565,18 +1575,6 @@ public:
         return NScheduler::FormatResources(resources);
     }
 
-    TString FormatResourceUsage(
-        const TJobResources& usage,
-        const TJobResources& limits,
-        const NNodeTrackerClient::NProto::TDiskResources& diskResources) const override
-    {
-        auto mediumDirectory = Bootstrap_
-            ->GetClient()
-            ->GetNativeConnection()
-            ->GetMediumDirectory();
-        return NScheduler::FormatResourceUsage(usage, limits, diskResources, mediumDirectory);
-    }
-
     void SerializeResources(const TJobResourcesWithQuota& resources, IYsonConsumer* consumer) const override
     {
         auto mediumDirectory = Bootstrap_
@@ -1752,6 +1750,17 @@ private:
     THashMap<TOperationId, TOperationPtr> IdToStartingOperation_;
 
     TAtomicIntrusivePtr<TRefCountedExecNodeDescriptorMap> CachedExecNodeDescriptors_{New<TRefCountedExecNodeDescriptorMap>()};
+
+    struct TRefCountedExecNodeDescriptorList
+        : public TRefCounted
+    {
+        explicit TRefCountedExecNodeDescriptorList(TSharedRef execNodeDescriptors)
+            : ExecNodeDescriptors(std::move(execNodeDescriptors))
+        { }
+
+        TSharedRef ExecNodeDescriptors;
+    };
+    TAtomicIntrusivePtr<TRefCountedExecNodeDescriptorList> CachedSerializedExecNodeDescriptors_;
 
     TIntrusivePtr<TSyncExpiringCache<TSchedulingTagFilter, TMemoryDistribution>> CachedExecNodeMemoryDistributionByTags_;
 
@@ -1947,6 +1956,7 @@ private:
         }
 
         auto nodesInfoEventId = TGuid::Create();
+        auto now = TInstant::Now();
         for (const auto& [treeId, nodeYsons] : nodeYsonsPerTree) {
             std::vector<TYsonString> splitNodeYsons;
             TYsonMapFragmentBatcher nodesConsumer(&splitNodeYsons, Config_->MaxEventLogNodeBatchSize);
@@ -1958,7 +1968,7 @@ private:
 
             for (int batchIndex = 0; batchIndex < std::ssize(splitNodeYsons); ++batchIndex) {
                 const auto& batch = splitNodeYsons[batchIndex];
-                LogEventFluently(&SchedulerEventLogger, ELogEventType::NodesInfo)
+                LogEventFluently(&SchedulerEventLogger, ELogEventType::NodesInfo, now)
                     .Item("nodes_info_event_id").Value(nodesInfoEventId)
                     .Item("nodes_batch_index").Value(batchIndex)
                     .Item("tree_id").Value(treeId)
@@ -2299,7 +2309,7 @@ private:
             const auto& rsp = rspOrError.Value();
             auto configFromCypress = ConvertToNode(TYsonString(rsp->value()));
             try {
-                newConfig->Load(configFromCypress, /* validate */ true, /* setDefaults */ false);
+                newConfig->Load(configFromCypress, /*validate*/ true, /*setDefaults*/ false);
             } catch (const std::exception& ex) {
                 auto error = TError(EErrorCode::WatcherHandlerFailed, "Error updating scheduler configuration")
                     << ex;
@@ -2324,7 +2334,7 @@ private:
 
             NodeManager_->UpdateConfig(Config_);
 
-            ReconfigureNativeSingletons(Bootstrap_->GetConfig(), Config_);
+            Bootstrap_->OnDynamicConfigChanged(Config_);
 
             Strategy_->UpdateConfig(Config_);
             MasterConnector_->UpdateConfig(Config_);
@@ -2353,6 +2363,10 @@ private:
             Bootstrap_->GetControllerAgentTracker()->UpdateConfig(Config_);
 
             EventLogWriter_->UpdateConfig(Config_->EventLog);
+
+            OrchidWorkerPool_->Configure(Config_->OrchidWorkerThreadCount);
+            FairShareUpdatePool_->Configure(Config_->FairShareUpdateThreadCount);
+            BackgroundThreadPool_->Configure(Config_->BackgroundThreadCount);
 
             ExperimentsAssigner_.UpdateExperimentConfigs(Config_->Experiments);
         }
@@ -2453,7 +2467,20 @@ private:
     {
         VERIFY_INVOKER_AFFINITY(GetBackgroundInvoker());
 
-        CachedExecNodeDescriptors_.Store(NodeManager_->GetExecNodeDescriptors());
+        auto execNodeDescriptors = NodeManager_->GetExecNodeDescriptors();
+
+        CachedExecNodeDescriptors_.Store(execNodeDescriptors);
+
+        NProto::TExecNodeDescriptorList serializedExecNodeDescriptors;
+
+        serializedExecNodeDescriptors.mutable_exec_nodes()->Reserve(std::ssize(*execNodeDescriptors));
+        for (const auto& [_, descriptor] : *execNodeDescriptors) {
+            ToProto(serializedExecNodeDescriptors.add_exec_nodes(), *descriptor);
+        }
+
+        CachedSerializedExecNodeDescriptors_.Store(
+            New<TRefCountedExecNodeDescriptorList>(
+                SerializeProtoToRefWithEnvelope(serializedExecNodeDescriptors)));
     }
 
     void CheckJobReporterIssues()
@@ -3271,7 +3298,7 @@ private:
                 error
                     << TErrorAttribute("abort_reason", EAbortReason::OperationSuspended),
                 EAbortReason::OperationSuspended,
-                /* terminated */ false);
+                /*terminated*/ false);
         }
 
         if (setAlert) {
@@ -3383,7 +3410,7 @@ private:
                 << TErrorAttribute("abort_reason", allocationAbortReason)
                 << error,
             allocationAbortReason,
-            /* terminated */ true);
+            /*terminated*/ true);
 
         // First flush: ensure that all stderrs are attached and the
         // state is changed to its intermediate value.
@@ -4397,6 +4424,11 @@ TRefCountedExecNodeDescriptorMapPtr TScheduler::GetCachedExecNodeDescriptors() c
     return Impl_->GetCachedExecNodeDescriptors();
 }
 
+TSharedRef TScheduler::GetCachedProtoExecNodeDescriptors() const
+{
+    return Impl_->GetCachedProtoExecNodeDescriptors();
+}
+
 const TSchedulerConfigPtr& TScheduler::GetConfig() const
 {
     return Impl_->GetConfig();
@@ -4555,17 +4587,6 @@ int TScheduler::GetOperationsArchiveVersion() const
 TString TScheduler::FormatResources(const TJobResourcesWithQuota& resources) const
 {
     return Impl_->FormatResources(resources);
-}
-
-TString TScheduler::FormatResourceUsage(
-    const TJobResources& usage,
-    const TJobResources& limits,
-    const NNodeTrackerClient::NProto::TDiskResources& diskResources) const
-{
-    return Impl_->FormatResourceUsage(
-        usage,
-        limits,
-        diskResources);
 }
 
 TFuture<void> TScheduler::SetOperationAlert(

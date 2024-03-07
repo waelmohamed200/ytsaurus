@@ -176,7 +176,7 @@ TFuture<void> TMasterChunkSpecFetcher::Fetch()
 
 void TMasterChunkSpecFetcher::DoFetch()
 {
-    YT_LOG_INFO("Fetching chunk specs from masters (CellCount: %v, TotalChunkCount: %v, TableCount: %v)",
+    YT_LOG_DEBUG("Fetching chunk specs from masters (CellCount: %v, TotalChunkCount: %v, TableCount: %v)",
         CellTagToState_.size(),
         TotalChunkCount_,
         TableCount_);
@@ -197,10 +197,10 @@ void TMasterChunkSpecFetcher::DoFetch()
     }
 
     if (!foreignChunkSpecs.empty()) {
-        YT_LOG_INFO("Locating foreign chunks (ForeignChunkCount: %v)", foreignChunkSpecs.size());
+        YT_LOG_DEBUG("Locating foreign chunks (ForeignChunkCount: %v)", foreignChunkSpecs.size());
         // TODO(dakovalkov): Use MasterReadOptions.
         LocateChunks(Client_, MaxChunksPerLocateRequest_, foreignChunkSpecs, NodeDirectory_, Logger, SkipUnavailableChunks_);
-        YT_LOG_INFO("Finished locating foreign chunks");
+        YT_LOG_DEBUG("Finished locating foreign chunks");
     }
 
     for (auto& [cellTag, cellState] : CellTagToState_) {
@@ -209,7 +209,7 @@ void TMasterChunkSpecFetcher::DoFetch()
         }
     }
 
-    YT_LOG_INFO("Chunk specs fetched from masters (ChunkCount: %v)", ChunkSpecs_.size());
+    YT_LOG_DEBUG("Chunk specs fetched from masters (ChunkCount: %v)", ChunkSpecs_.size());
 }
 
 void TMasterChunkSpecFetcher::DoFetchFromCell(TCellTag cellTag)
@@ -344,7 +344,7 @@ void TTabletChunkSpecFetcher::AddSorted(
             }
 
             auto tabletUpperBound = tabletIndex + 1 == tabletInfos.size()
-                ? TKeyBound::MakeUniversal(/* isUpper */ true)
+                ? TKeyBound::MakeUniversal(/*isUpper*/ true)
                 : tabletInfos[tabletIndex + 1]->GetLowerKeyBound().Invert();
 
             auto subrangeLowerBound = tabletLowerBound;
@@ -426,7 +426,7 @@ TFuture<void> TTabletChunkSpecFetcher::Fetch()
 
 void TTabletChunkSpecFetcher::DoFetch()
 {
-    YT_LOG_INFO("Fetching chunk specs from tablet nodes (NodeCount: %v, TotalChunkCount: %v, TableCount: %v)",
+    YT_LOG_DEBUG("Fetching chunk specs from tablet nodes (NodeCount: %v, TotalChunkCount: %v, TableCount: %v)",
         NodeAddressToState_.size(),
         TotalChunkCount_,
         TableCount_);
@@ -451,7 +451,7 @@ void TTabletChunkSpecFetcher::DoFetch()
         }
     }
 
-    YT_LOG_INFO(
+    YT_LOG_DEBUG(
         "Chunk specs fetched from tablet nodes (ChunkCount: %v, MissingTabletCount: %v, MissingTabletIds: %v)",
         ChunkSpecs_.size(),
         missingTabletIds.size(),
@@ -506,7 +506,7 @@ void TTabletChunkSpecFetcher::DoFetchFromNode(const TString& address)
         } else {
             for (auto& chunkSpec : *subresponse.mutable_stores()) {
                 YT_LOG_TRACE("Received chunk spec from tablet (ChunkSpec: %v)",
-                    chunkSpec.DebugString());
+                    chunkSpec.ShortDebugString());
                 state.ChunkSpecs.push_back(std::move(chunkSpec));
             }
         }

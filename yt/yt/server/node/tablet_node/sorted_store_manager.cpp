@@ -82,7 +82,6 @@ struct TMergeRowsOnFlushTag
 { };
 
 static const size_t MaxRowsPerFlushRead = 1024;
-static const auto BlockedRowWaitQuantum = TDuration::MilliSeconds(100);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -505,8 +504,10 @@ void TSortedStoreManager::AddStore(IStorePtr store, bool onMount, bool onFlush, 
 
 void TSortedStoreManager::BulkAddStores(TRange<IStorePtr> stores, bool onMount)
 {
+    TBulkInsertProfiler bulkInsertProfiler(Tablet_);
     THashMap<TPartitionId, std::vector<ISortedStorePtr>> addedStoresByPartition;
     for (const auto& store : stores) {
+        bulkInsertProfiler.Update(store);
         AddStore(store, onMount, /*onFlush*/ false);
         auto sortedStore = store->AsSorted();
         addedStoresByPartition[sortedStore->GetPartition()->GetId()].push_back(sortedStore);
@@ -676,7 +677,7 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
 
         auto combinedThrottler = CreateCombinedThrottler(std::vector<IThroughputThrottlerPtr>{
             throttler,
-            tabletSnapshot->FlushThrottler
+            tabletSnapshot->FlushThrottler,
         });
 
         auto tabletCellTag = CellTagFromId(tabletSnapshot->TabletId);
@@ -728,7 +729,16 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
                 blockCache),
             tabletSnapshot->PhysicalSchema,
             hunkChunkPayloadWriter,
-            hunkChunkWriterStatistics);
+            hunkChunkWriterStatistics,
+            tabletSnapshot->DictionaryCompressionFactory,
+            TClientChunkReadOptions{
+                // TODO(akozhikhov): Populate with memory tracker?
+                .WorkloadDescriptor = workloadDescriptor,
+                .ReadSessionId = TReadSessionId::Create(),
+                .HunkChunkReaderStatistics = CreateHunkChunkReaderStatistics(
+                    tabletSnapshot->Settings.MountConfig->EnableHunkColumnarProfiling,
+                    tabletSnapshot->PhysicalSchema),
+            });
 
         auto updateProfilerGuard = Finally([&] {
             writerProfiler->Update(storeWriter);
@@ -801,6 +811,9 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
             rowCache->SetFlushIndex(storeFlushIndex);
         }
 
+        auto rowsInStore = 0;
+        TUpdateCacheStatistics cacheUpdateStatistics;
+
         THazardPtrReclaimOnContextSwitchGuard reclaimGuard;
 
         TRowBatchReadOptions readOptions{
@@ -829,8 +842,14 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
                 rows.resize(std::distance(rows.begin(), outputIt));
             }
 
+            rowsInStore += std::ssize(rows);
+
             if (rowCache && storeFlushIndex > 0) {
-                rowCache->UpdateItems(rows, newRetainedTimestamp, compactionRowMerger.get(), storeFlushIndex, Logger);
+                auto statistics = rowCache->UpdateItems(rows, newRetainedTimestamp, compactionRowMerger.get(), storeFlushIndex, Logger);
+
+                cacheUpdateStatistics.FoundRows += statistics.FoundRows;
+                cacheUpdateStatistics.DiscardedRows += statistics.DiscardedRows;
+                cacheUpdateStatistics.FailedByMemoryRows += statistics.FailedByMemoryRows;
             }
 
             if (!storeWriter->Write(rows)) {
@@ -879,7 +898,19 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
                 dataStatistics.erasure_disk_space());
         };
 
-        YT_LOG_DEBUG("Sorted store flushed (StoreId: %v, StoreChunkId: %v, StoreChunkDiskSpace: %v%v)",
+        auto totalDiskSpace = getDiskSpace(storeWriter, tabletSnapshot->Settings.StoreWriterOptions) +
+            getDiskSpace(hunkChunkWriter, tabletSnapshot->Settings.HunkWriterOptions);
+        auto mediumThrottler = GetBlobMediumWriteThrottler(
+            TabletContext_->GetDynamicConfigManager(),
+            tabletSnapshot);
+
+        YT_LOG_DEBUG("Throttling blobs media write in sorted store flush (DiskSpace: %v)",
+            totalDiskSpace);
+
+        WaitFor(mediumThrottler->Throttle(totalDiskSpace))
+            .ThrowOnError();
+
+        YT_LOG_DEBUG("Sorted store flushed (StoreId: %v, StoreChunkId: %v, StoreChunkDiskSpace: %v%v, RowsInStore %v, FoundCacheRows: %v, DiscardedCacheRows: %v, FailedByMemoryCacheRows: %v)",
             store->GetId(),
             storeChunkWriter->GetChunkId(),
             getDiskSpace(storeWriter, tabletSnapshot->Settings.StoreWriterOptions),
@@ -889,7 +920,11 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
                         hunkChunkPayloadWriter->GetChunkId(),
                         getDiskSpace(hunkChunkWriter, tabletSnapshot->Settings.HunkWriterOptions));
                 }
-            }));
+            }),
+            rowsInStore,
+            cacheUpdateStatistics.FoundRows,
+            cacheUpdateStatistics.DiscardedRows,
+            cacheUpdateStatistics.FailedByMemoryRows);
 
         TStoreFlushResult result;
 
@@ -1195,7 +1230,8 @@ void TSortedStoreManager::OnRowBlocked(
     IStore* store,
     IInvokerPtr invoker,
     TSortedDynamicRow row,
-    int lockIndex)
+    TSortedDynamicStore::TConflictInfo conflictInfo,
+    TDuration timeout)
 {
     Y_UNUSED(WaitFor(
         BIND(
@@ -1203,7 +1239,8 @@ void TSortedStoreManager::OnRowBlocked(
             MakeStrong(this),
             MakeStrong(store),
             row,
-            lockIndex)
+            conflictInfo,
+            timeout)
         .AsyncVia(invoker)
         .Run()));
 }
@@ -1211,21 +1248,27 @@ void TSortedStoreManager::OnRowBlocked(
 void TSortedStoreManager::WaitOnBlockedRow(
     IStorePtr /*store*/,
     TSortedDynamicRow row,
-    int lockIndex)
+    TSortedDynamicStore::TConflictInfo conflictInfo,
+    TDuration timeout)
 {
-    const auto& lock = row.BeginLocks(Tablet_->GetPhysicalSchema()->GetKeyColumnCount())[lockIndex];
+    const auto& lock = row.BeginLocks(Tablet_->GetPhysicalSchema()->GetKeyColumnCount())[conflictInfo.LockIndex];
     const auto* transaction = lock.PreparedTransaction;
 
     if (!transaction) {
         return;
     }
 
-    YT_LOG_DEBUG("Waiting on blocked row (Key: %v, LockIndex: %v, TransactionId: %v)",
-        RowToKey(*Tablet_->GetPhysicalSchema(), row),
-        lockIndex,
-        transaction->GetId());
+    if (lock.PrepareTimestamp.load() >= conflictInfo.CheckingTimestamp) {
+        return;
+    }
 
-    Y_UNUSED(WaitFor(transaction->GetFinished().WithTimeout(BlockedRowWaitQuantum)));
+    YT_LOG_DEBUG("Waiting on blocked row (Key: %v, LockIndex: %v, TransactionId: %v, Timeout: %v)",
+        RowToKey(*Tablet_->GetPhysicalSchema(), row),
+        conflictInfo.LockIndex,
+        transaction->GetId(),
+        timeout);
+
+    Y_UNUSED(WaitFor(transaction->GetFinished().WithTimeout(timeout)));
 }
 
 bool TSortedStoreManager::IsOverflowRotationNeeded() const

@@ -310,7 +310,7 @@ private:
             return IsCompleted_;
         }
 
-        TCookie Extract(TNodeId /* nodeId */) override
+        TCookie Extract(TNodeId /*nodeId*/) override
         {
             if (JobCounter->GetPending() == 0) {
                 return IChunkPoolOutput::NullCookie;
@@ -362,7 +362,7 @@ private:
             return run.GetSliceCount();
         }
 
-        void Completed(TCookie cookie, const TCompletedJobSummary& /* jobSummary */) override
+        void Completed(TCookie cookie, const TCompletedJobSummary& /*jobSummary*/) override
         {
             auto& run = Runs_[cookie];
             YT_VERIFY(run.State == ERunState::Running);

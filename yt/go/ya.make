@@ -18,6 +18,7 @@ RECURSE(
     bus
     compression
     crc64
+    deps
     examples
     # genproto
     guid
@@ -35,6 +36,7 @@ RECURSE(
     yterrors
     ytlock
     ytlog
+    ytsys
     yttest
     ytwalk
 )

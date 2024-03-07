@@ -62,11 +62,13 @@ TRowVtable LoadVtableFromNode(const NYT::TNode& node)
 void TSerializer<NRoren::NPrivate::TRowVtable>::Save(IOutputStream* output, const NRoren::NPrivate::TRowVtable& rowVtable)
 {
     ::Save(output, rowVtable.TypeName);
+    ::Save(output, rowVtable.TypeHash);
     ::Save(output, static_cast<ui64>(rowVtable.DataSize));
     ::Save(output, reinterpret_cast<ui64>(rowVtable.DefaultConstructor));
     ::Save(output, reinterpret_cast<ui64>(rowVtable.Destructor));
     ::Save(output, reinterpret_cast<ui64>(rowVtable.CopyConstructor));
     ::Save(output, reinterpret_cast<ui64>(rowVtable.RawCoderFactory));
+    ::Save(output, reinterpret_cast<ui64>(rowVtable.CopyToUniquePtr));
     ::Save(output, static_cast<ui64>(rowVtable.KeyOffset));
     ::Save(output, static_cast<ui64>(rowVtable.ValueOffset));
     ::Save(output, reinterpret_cast<ui64>(rowVtable.KeyVtableFactory));
@@ -79,14 +81,16 @@ void TSerializer<NRoren::NPrivate::TRowVtable>::Load(
 {
     using namespace NRoren::NPrivate;
     i64 dataSize, keyOffset, valueOffset;
-    ui64 defaultConstructor, destructor, copyConstructor, rawCoderFactory, keyVtableFactory, valueVtableFactory;
+    ui64 defaultConstructor, destructor, copyConstructor, rawCoderFactory, copyToUniquePtr, keyVtableFactory, valueVtableFactory;
 
     ::Load(input, rowVtable.TypeName);
+    ::Load(input, rowVtable.TypeHash);
     ::Load(input, dataSize);
     ::Load(input, defaultConstructor);
     ::Load(input, destructor);
     ::Load(input, copyConstructor);
     ::Load(input, rawCoderFactory);
+    ::Load(input, copyToUniquePtr);
     ::Load(input, keyOffset);
     ::Load(input, valueOffset);
     ::Load(input, keyVtableFactory);
@@ -97,6 +101,7 @@ void TSerializer<NRoren::NPrivate::TRowVtable>::Load(
     rowVtable.Destructor = reinterpret_cast<TRowVtable::TUniDataFunction>(destructor);
     rowVtable.CopyConstructor = reinterpret_cast<TRowVtable::TCopyDataFunction>(copyConstructor);
     rowVtable.RawCoderFactory = reinterpret_cast<TRowVtable::TRawCoderFactoryFunction>(rawCoderFactory);
+    rowVtable.CopyToUniquePtr = reinterpret_cast<TRowVtable::TCopyToUniquePtrFunction>(copyToUniquePtr);
     rowVtable.KeyOffset = keyOffset;
     rowVtable.ValueOffset = valueOffset;
     rowVtable.KeyVtableFactory = reinterpret_cast<TRowVtable::TRowVtableFactoryFunction>(keyVtableFactory);

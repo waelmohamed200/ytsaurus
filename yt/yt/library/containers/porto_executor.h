@@ -15,9 +15,10 @@ namespace NYT::NContainers {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct TVolumeId
+struct TVolumeSpec
 {
     TString Path;
+    TString Backend;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -112,6 +113,7 @@ struct IPortoExecutor
         const TString& path,
         const TString& name) = 0;
     virtual TFuture<std::vector<TString>> ListVolumePaths() = 0;
+    virtual TFuture<std::vector<TVolumeSpec>> GetVolumes() = 0;
 
     virtual TFuture<void> ImportLayer(
         const TString& archivePath,

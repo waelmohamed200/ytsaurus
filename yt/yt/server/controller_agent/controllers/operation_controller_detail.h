@@ -884,8 +884,10 @@ protected:
         const NChunkClient::TChunkReplicaWithMediumList& replicas,
         TInputChunkDescriptor* descriptor);
 
+    bool IsLegacyOutputLivePreviewSupported() const;
     bool IsOutputLivePreviewSupported() const;
-    bool IsIntermediateLivePreviewSupported() const;
+    bool IsLegacyIntermediateLivePreviewSupported() const;
+    virtual bool IsIntermediateLivePreviewSupported() const;
 
     //! Accumulate information about legacy live preview depending on operation type and user intent.
     virtual ELegacyLivePreviewMode GetLegacyOutputLivePreviewMode() const;
@@ -949,7 +951,7 @@ protected:
 
     NTableClient::TSortColumns CheckInputTablesSorted(
         const NTableClient::TSortColumns& sortColumns,
-        TInputTableFilter inputTableFilter = [](const TInputTablePtr& /* table */) { return true; });
+        TInputTableFilter inputTableFilter = [](const TInputTablePtr& /*table*/) { return true; });
 
     static bool CheckKeyColumnsCompatible(
         const NTableClient::TKeyColumns& fullColumns,

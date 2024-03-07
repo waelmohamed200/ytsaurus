@@ -107,6 +107,32 @@ void TDynamicTabletNodeTrackerConfig::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TDynamicCellHydraPersistenceSynchronizerConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("use_hydra_persistence_directory", &TThis::UseHydraPersistenceDirectory)
+        .Default(false);
+    registrar.Parameter("migrate_to_virtual_cell_maps", &TThis::MigrateToVirtualCellMaps)
+        .Default(false);
+    registrar.Parameter("synchronization_period", &TThis::SynchronizationPeriod)
+        .Default(TDuration::Seconds(60));
+    registrar.Parameter("max_cells_to_register_in_cypress_per_iteration", &TThis::MaxCellsToRegisterInCypressPerIteration)
+        .GreaterThanOrEqual(0)
+        .Default(200);
+    registrar.Parameter("max_cells_to_unregister_from_cypress_per_iteration", &TThis::MaxCellsToUnregisterFromCypressPerIteration)
+        .GreaterThanOrEqual(0)
+        .Default(200);
+    registrar.Parameter("max_cell_acl_updates_per_iteration", &TThis::MaxCellAclUpdatesPerIteration)
+        .GreaterThanOrEqual(0)
+        .Default(20);
+    registrar.Parameter("hydra_persistence_file_id_update_period", &TThis::HydraPersistenceFileIdUpdatePeriod)
+        .Default(TDuration::Seconds(1));
+    registrar.Parameter("max_hydra_persistence_file_id_updates_per_iteration", &TThis::MaxHydraPersistenceFileIdUpdatesPerIteration)
+        .GreaterThan(0)
+        .Default(200);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TDynamicTabletManagerConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("peer_revocation_timeout", &TThis::PeerRevocationTimeout)
@@ -207,6 +233,9 @@ void TDynamicTabletManagerConfig::Register(TRegistrar registrar)
     registrar.Parameter("tamed_cell_manager_profiling_period", &TThis::TamedCellManagerProfilingPeriod)
         .Default(DefaultTamedCellManagerProfilingPeriod);
 
+    registrar.Parameter("cell_hydra_persistence_synchronizer", &TThis::CellHydraPersistenceSynchronizer)
+        .DefaultNew();
+
     registrar.Parameter("forbid_arbitrary_data_versions_in_retention_config", &TThis::ForbidArbitraryDataVersionsInRetentionConfig)
         .Default(false)
         .DontSerializeDefault();
@@ -223,6 +252,9 @@ void TDynamicTabletManagerConfig::Register(TRegistrar registrar)
     registrar.Parameter("replicate_table_collocations", &TThis::ReplicateTableCollocations)
         .Default(true)
         .DontSerializeDefault();
+
+    registrar.Parameter("max_chunks_per_mounted_tablet", &TThis::MaxChunksPerMountedTablet)
+        .Default(15000);
 
     registrar.Preprocessor([] (TThis* config) {
         config->StoreChunkReader->SuspiciousNodeGracePeriod = TDuration::Minutes(5);

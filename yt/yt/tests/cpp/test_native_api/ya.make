@@ -19,7 +19,7 @@ PEERDIR(
     yt/yt/library/named_value
 )
 
-INCLUDE(${ARCADIA_ROOT}/yt/yt/tests/cpp/recipe/recipe.inc)
+INCLUDE(${ARCADIA_ROOT}/yt/yt/tests/recipe/recipe.inc)
 
 TAG(ya:yt ya:fat ya:huge_logs)
 
@@ -27,6 +27,10 @@ SIZE(LARGE)
 
 YT_SPEC(yt/yt/tests/integration/spec.yson)
 
-REQUIREMENTS(ram:10)
+IF (SANITIZER_TYPE)
+    REQUIREMENTS(ram:20)
+ELSE()
+    REQUIREMENTS(ram:10)
+ENDIF()
 
 END()

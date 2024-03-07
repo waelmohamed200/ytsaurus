@@ -4,46 +4,6 @@
 
 namespace NYT::NTest {
 
-class TMapperReducer : public IReducer
-{
-public:
-    TMapperReducer(
-        const TTable& input,
-        std::unique_ptr<IMultiMapper> inner);
-
-    TMapperReducer(
-        const TTable& input,
-        const TMapperReducer& proto);
-
-    virtual TRange<int> InputColumns() const override;
-    virtual TRange<TDataColumn> OutputColumns() const override;
-
-    virtual std::vector<std::vector<TNode>> Run(TCallState* state, TRange<TRange<TNode>> input) const override;
-    virtual void ToProto(NProto::TReducer* proto) const override;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-
-class TSequenceReducer : public IReducer
-{
-public:
-    TSequenceReducer(
-        const TTable& input,
-        std::vector<std::unique_ptr<IReducer>> operations);
-
-    TSequenceReducer(
-        const TTable& input,
-        const NProto::TSequenceReducer& proto);
-
-    virtual TRange<int> InputColumns() const override;
-    virtual TRange<TDataColumn> OutputColumns() const override;
-
-    virtual std::vector<std::vector<TNode>> Run(TCallState* state, TRange<TRange<TNode>> input) const override;
-    virtual void ToProto(NProto::TReducer* proto) const override;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-
 class TSumReducer : public IReducer
 {
 public:
@@ -53,12 +13,37 @@ public:
     virtual TRange<int> InputColumns() const override;
     virtual TRange<TDataColumn> OutputColumns() const override;
 
-    virtual std::vector<std::vector<TNode>> Run(TCallState* state, TRange<TRange<TNode>> input) const override;
+    virtual void StartRange(TCallState* state, TRange<TNode> key) override;
+    virtual void ProcessRow(TCallState* state, TRange<TNode> input) override;
+    virtual std::vector<std::vector<TNode>> FinishRange(TCallState* state) override;
     virtual void ToProto(NProto::TReducer* proto) const override;
 
 private:
     int InputColumnIndex_[1];
     TDataColumn OutputColumns_[1];
+    int64_t Result_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TSumHashReducer : public IReducer
+{
+public:
+    TSumHashReducer(const TTable& input, std::vector<int> indices, TDataColumn outputColumn);
+    TSumHashReducer(const TTable& input, const NProto::TSumHashReducer& proto);
+
+    virtual TRange<int> InputColumns() const override;
+    virtual TRange<TDataColumn> OutputColumns() const override;
+
+    virtual void StartRange(TCallState* state, TRange<TNode> key) override;
+    virtual void ProcessRow(TCallState* state, TRange<TNode> input) override;
+    virtual std::vector<std::vector<TNode>> FinishRange(TCallState* state) override;
+    virtual void ToProto(NProto::TReducer* proto) const override;
+
+private:
+    std::vector<int> InputColumns_;
+    TDataColumn OutputColumns_[1];
+    int64_t Result_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -73,8 +58,15 @@ public:
     virtual TRange<int> InputColumns() const override;
     virtual TRange<TDataColumn> OutputColumns() const override;
 
-    virtual std::vector<std::vector<TNode>> Run(TCallState* state, TRange<TRange<TNode>> input) const override;
+    virtual void StartRange(TCallState* state, TRange<TNode> key) override;
+    virtual void ProcessRow(TCallState* state, TRange<TNode> input) override;
+    virtual std::vector<std::vector<TNode>> FinishRange(TCallState* state) override;
     virtual void ToProto(NProto::TReducer* proto) const override;
+
+private:
+    std::vector<std::unique_ptr<IReducer>> Operations_;
+    std::vector<TDataColumn> OutputColumns_;
+    std::vector<int> InputColumns_;
 };
 
 }  // namespace NYT::NTest

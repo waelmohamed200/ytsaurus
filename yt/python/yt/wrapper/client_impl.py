@@ -190,14 +190,17 @@ class YtClient(ClientState):
             self,
             component, address, type, comment):
         """
-        Adds maintenance request for given node
+        Adds maintenance request for a given node.
 
-        :param component: component type. There are 4 component types: `cluster_node`, `http_proxy`, `rpc_proxy`, `host`.
+        :param component: component type. There are 4 component types: `cluster_node`, `http_proxy`,
+        `rpc_proxy`, `host`. Note that `host` type is "virtual" since hosts do not support maintenance
+        flags. Instead command is applied to all nodes on the given host.
         :param address: component address.
-        :param type: maintenance type. There are 6 maintenance types: ban, decommission, disable_scheduler_jobs,
-        disable_write_sessions, disable_tablet_cells, pending_restart.
+        :param type: maintenance type. There are 6 maintenance types: ban, decommission,
+        disable_scheduler_jobs, disable_write_sessions, disable_tablet_cells, pending_restart.
         :param comment: any string with length not larger than 512 characters.
-        :return: unique (per component) maintenance id.
+        :return: YSON map-node with maintenance IDs for each target. Maintenance IDs are unique
+        per target.
 
         """
         return client_api.add_maintenance(
@@ -518,7 +521,7 @@ class YtClient(ClientState):
     def create_table_backup(
             self,
             manifest,
-            force=None, checkpoint_timestamp_delay=None, checkpoint_check_timeout=None):
+            force=None, checkpoint_timestamp_delay=None, checkpoint_check_timeout=None, preserve_account=None):
         """
         Creates a consistent backup copy of a collection of tables.
 
@@ -530,7 +533,8 @@ class YtClient(ClientState):
         return client_api.create_table_backup(
             manifest,
             client=self,
-            force=force, checkpoint_timestamp_delay=checkpoint_timestamp_delay, checkpoint_check_timeout=checkpoint_check_timeout)
+            force=force, checkpoint_timestamp_delay=checkpoint_timestamp_delay, checkpoint_check_timeout=checkpoint_check_timeout,
+            preserve_account=preserve_account)
 
     def create_temp_table(
             self,
@@ -638,9 +642,10 @@ class YtClient(ClientState):
             self,
             table, output_file):
         """
-        Dump parquet
+        Dump parquet into a file from table with a strict schema
+        `parquet doc <https://parquet.apache.org/docs>`_
 
-        :param table: path to tables
+        :param table: table
         :type table: str or :class:`TablePath <yt.wrapper.ypath.TablePath>`
         :param output_file: path to output file
         :type path: str
@@ -989,6 +994,38 @@ class YtClient(ClientState):
         return client_api.get_operation_state(
             operation,
             client=self)
+
+    def get_pipeline_dynamic_spec(
+            self,
+            pipeline_path,
+            spec_path=None, format=None):
+        """
+        Get YT Flow pipeline dynamic spec.
+
+        :param pipeline_path: path to pipeline.
+        :param spec_path: path to part of the spec.
+
+        """
+        return client_api.get_pipeline_dynamic_spec(
+            pipeline_path,
+            client=self,
+            spec_path=spec_path, format=format)
+
+    def get_pipeline_spec(
+            self,
+            pipeline_path,
+            spec_path=None, format=None):
+        """
+        Get YT Flow pipeline spec.
+
+        :param pipeline_path: path to pipeline.
+        :param spec_path: path to part of the spec.
+
+        """
+        return client_api.get_pipeline_spec(
+            pipeline_path,
+            client=self,
+            spec_path=spec_path, format=format)
 
     def get_query(
             self,
@@ -1533,6 +1570,19 @@ class YtClient(ClientState):
             partition_mode=partition_mode, data_weight_per_partition=data_weight_per_partition, max_partition_count=max_partition_count,
             enable_key_guarantee=enable_key_guarantee, adjust_data_weight_per_partition=adjust_data_weight_per_partition)
 
+    def pause_pipeline(
+            self,
+            pipeline_path):
+        """
+        Pause YT Flow pipeline.
+
+        :param pipeline_path: path to pipeline.
+
+        """
+        return client_api.pause_pipeline(
+            pipeline_path,
+            client=self)
+
     def ping_transaction(
             self,
             transaction,
@@ -1817,9 +1867,9 @@ class YtClient(ClientState):
 
         :param component: component type. There are 4 component types: `cluster_node`, `http_proxy`, `rpc_proxy`, `host`.
         :param address: component address.
-        :param ids: maintenance ids. Only maintenance requests which id is listed can be removed.
         :param id: single maintenance id. The same as `ids` but accepts single id instead of list.
         Cannot be used at the same time with `ids`.
+        :param ids: maintenance ids. Only maintenance requests which id is listed can be removed.
         :param type: maintenance type. If set only maintenance requests with given type will be removed.
         There are 6 maintenance types: ban, decommission, disable_scheduler_jobs, disable_write_sessions,
         disable_tablet_cell, pending_restart.
@@ -1828,7 +1878,7 @@ class YtClient(ClientState):
         Cannot be used with `user`.
         :param all: all maintenance requests from given node will be removed.
         Cannot be used with other options.
-        :return: Dictionary with removed maintenance request count for each maintenance type.
+        :return: two-level YSON map-node: {target -> {maintenance_type -> count}}.
 
         """
         return client_api.remove_maintenance(
@@ -1851,6 +1901,41 @@ class YtClient(ClientState):
         return client_api.remove_member(
             member, group,
             client=self)
+
+    def remove_pipeline_dynamic_spec(
+            self,
+            pipeline_path,
+            spec_path=None, expected_version=None):
+        """
+        Remove YT Flow pipeline dynamic spec.
+
+        :param pipeline_path: path to pipeline.
+        :param spec_path: path to part of the spec.
+        :param expected_version: current dynamic spec expected version.
+
+        """
+        return client_api.remove_pipeline_dynamic_spec(
+            pipeline_path,
+            client=self,
+            spec_path=spec_path, expected_version=expected_version)
+
+    def remove_pipeline_spec(
+            self,
+            pipeline_path,
+            spec_path=None, expected_version=None, force=None):
+        """
+        Remove YT Flow pipeline spec.
+
+        :param pipeline_path: path to pipeline.
+        :param spec_path: path to part of the spec.
+        :param expected_version: current spec expected version.
+        :param force: if true, remove spec even if pipeline is paused.
+
+        """
+        return client_api.remove_pipeline_spec(
+            pipeline_path,
+            client=self,
+            spec_path=spec_path, expected_version=expected_version, force=force)
 
     def reshard_table(
             self,
@@ -1907,7 +1992,7 @@ class YtClient(ClientState):
     def restore_table_backup(
             self,
             manifest,
-            force=None, mount=None, enable_replicas=None):
+            force=None, mount=None, enable_replicas=None, preserve_account=None):
         """
         Restores a collection of tables from its backup copy.
 
@@ -1921,7 +2006,7 @@ class YtClient(ClientState):
         return client_api.restore_table_backup(
             manifest,
             client=self,
-            force=force, mount=mount, enable_replicas=enable_replicas)
+            force=force, mount=mount, enable_replicas=enable_replicas, preserve_account=preserve_account)
 
     def resume_operation(
             self,
@@ -2386,6 +2471,43 @@ class YtClient(ClientState):
             path, attribute, value,
             client=self)
 
+    def set_pipeline_dynamic_spec(
+            self,
+            pipeline_path, value,
+            format=None, spec_path=None, expected_version=None):
+        """
+        Set YT Flow pipeline dynamic spec.
+
+        :param pipeline_path: path to pipeline.
+        :param spec: new pipeline spec.
+        :param spec_path: path to part of the spec.
+        :param expected_version: current dynamic spec expected version.
+
+        """
+        return client_api.set_pipeline_dynamic_spec(
+            pipeline_path, value,
+            client=self,
+            format=format, spec_path=spec_path, expected_version=expected_version)
+
+    def set_pipeline_spec(
+            self,
+            pipeline_path, value,
+            format=None, spec_path=None, expected_version=None, force=None):
+        """
+        Set YT Flow pipeline spec.
+
+        :param pipeline_path: path to pipeline.
+        :param spec: new pipeline spec.
+        :param spec_path: path to part of the spec.
+        :param expected_version: current spec expected version.
+        :param force: if true, update spec even if pipeline is paused.
+
+        """
+        return client_api.set_pipeline_spec(
+            pipeline_path, value,
+            client=self,
+            format=format, spec_path=spec_path, expected_version=expected_version, force=force)
+
     def set_user_password(
             self,
             user, new_password,
@@ -2453,6 +2575,19 @@ class YtClient(ClientState):
             client=self,
             destination=destination, yt_filename=yt_filename, placement_strategy=placement_strategy,
             ignore_set_attributes_error=ignore_set_attributes_error, hash=hash)
+
+    def start_pipeline(
+            self,
+            pipeline_path):
+        """
+        Start YT Flow pipeline.
+
+        :param pipeline_path: path to pipeline.
+
+        """
+        return client_api.start_pipeline(
+            pipeline_path,
+            client=self)
 
     def start_query(
             self,
@@ -2536,6 +2671,19 @@ class YtClient(ClientState):
             client=self,
             parent_transaction=parent_transaction, timeout=timeout, deadline=deadline, attributes=attributes,
             type=type, sticky=sticky, prerequisite_transaction_ids=prerequisite_transaction_ids)
+
+    def stop_pipeline(
+            self,
+            pipeline_path):
+        """
+        Stop YT Flow pipeline.
+
+        :param pipeline_path: path to pipeline.
+
+        """
+        return client_api.stop_pipeline(
+            pipeline_path,
+            client=self)
 
     def suspend_operation(
             self,
@@ -2710,6 +2858,23 @@ class YtClient(ClientState):
         """
         return client_api.update_operation_parameters(
             operation_id, parameters,
+            client=self)
+
+    def upload_parquet(
+            self,
+            table, input_file):
+        """
+        Upload parquet from a file into a table that must be created with a strict schema
+        `parquet doc <https://parquet.apache.org/docs>`_
+
+        :param table: table
+        :type table: str or :class:`TablePath <yt.wrapper.ypath.TablePath>`
+        :param input_file: path to input file
+        :type path: str
+
+        """
+        return client_api.upload_parquet(
+            table, input_file,
             client=self)
 
     def write_file(

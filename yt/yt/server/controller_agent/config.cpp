@@ -310,8 +310,7 @@ void TUserJobOptions::Register(TRegistrar registrar)
 void TOperationOptions::Register(TRegistrar registrar)
 {
     registrar.Parameter("spec_template", &TThis::SpecTemplate)
-        .Default()
-        .MergeBy(NYTree::EMergeStrategy::Combine);
+        .Default();
 
     registrar.Parameter("slice_data_weight_multiplier", &TThis::SliceDataWeightMultiplier)
         .Alias("slice_data_size_multiplier")
@@ -366,6 +365,13 @@ void TOperationOptions::Register(TRegistrar registrar)
 
     registrar.Parameter("set_container_cpu_limit", &TThis::SetContainerCpuLimit)
         .Default(false);
+
+    registrar.Parameter("set_slot_container_memory_limit", &TThis::SetSlotContainerMemoryLimit)
+        .Default(false);
+
+    registrar.Parameter("slot_container_memory_overhead", &TThis::SlotContainerMemoryOverhead)
+        .Default(0)
+        .GreaterThanOrEqual(0);
 
     // NB: defaults for these values are actually in preprocessor of TControllerAgentConfig::OperationOptions.
     registrar.Parameter("controller_building_job_spec_count_limit", &TThis::ControllerBuildingJobSpecCountLimit)
@@ -518,7 +524,8 @@ void TUserJobMonitoringConfig::Register(TRegistrar registrar)
     registrar.Parameter("enable_extended_max_monitored_user_jobs_per_operation", &TThis::EnableExtendedMaxMonitoredUserJobsPerOperation)
         .Default({
             {EOperationType::Vanilla, true},
-        });
+        })
+        .ResetOnLoad();
 
     registrar.Parameter("max_monitored_user_jobs_per_agent", &TThis::MaxMonitoredUserJobsPerAgent)
         .Default(1'000)
@@ -812,8 +819,7 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         .Default(10'000);
 
     registrar.Parameter("operation_options", &TThis::OperationOptions)
-        .Default(NYTree::GetEphemeralNodeFactory()->CreateMap())
-        .MergeBy(NYTree::EMergeStrategy::Combine);
+        .Default(NYTree::GetEphemeralNodeFactory()->CreateMap());
 
     registrar.Parameter("map_operation_options", &TThis::MapOperationOptions)
         .DefaultNew();
@@ -842,7 +848,7 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         .Default({
             {"HOME", "$(SandboxPath)"},
             {"TMPDIR", "$(SandboxPath)"},
-        }).MergeBy(NYTree::EMergeStrategy::Combine);
+        });
 
     registrar.Parameter("enable_controller_failure_spec_option", &TThis::EnableControllerFailureSpecOption)
         .Default(false);
@@ -1086,6 +1092,12 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
     registrar.Parameter("enable_job_profiling", &TThis::EnableJobProfiling)
         .Default();
 
+    registrar.Parameter("cuda_profiler_layer_path", &TThis::CudaProfilerLayerPath)
+        .Default();
+
+    registrar.Parameter("cuda_profiler_environment", &TThis::CudaProfilerEnvironment)
+        .Default();
+
     registrar.Parameter("max_running_job_statistics_update_count_per_heartbeat", &TThis::MaxRunningJobStatisticsUpdateCountPerHeartbeat)
         .Default(std::numeric_limits<int>::max());
 
@@ -1115,6 +1127,9 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("commit_operation_cypress_node_changes_via_system_transaction", &TThis::CommitOperationCypressNodeChangesViaSystemTransaction)
         .Default(false);
+
+    registrar.Parameter("rpc_server", &TThis::RpcServer)
+        .DefaultNew();
 
     registrar.Preprocessor([&] (TControllerAgentConfig* config) {
         config->EventLog->MaxRowWeight = 128_MB;

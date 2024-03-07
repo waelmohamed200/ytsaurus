@@ -33,12 +33,13 @@ template <typename TColumnName>
 class TGenericColumnFilterDictionary;
 
 using TColumnFilterDictionary = TGenericColumnFilterDictionary<TString>;
-using TStableColumnNameFilterDictionary = TGenericColumnFilterDictionary<TStableName>;
+using TColumnStableNameFilterDictionary = TGenericColumnFilterDictionary<TColumnStableName>;
 
 class THorizontalBlockReader;
 
 struct THunkChunkRef;
 struct THunkChunksInfo;
+struct THunkChunkMeta;
 
 struct TTableReadSpec;
 struct TFetchSingleTableReadSpecOptions;

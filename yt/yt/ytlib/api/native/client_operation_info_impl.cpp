@@ -182,7 +182,7 @@ TClient::TGetOperationFromCypressResult TClient::DoGetOperationFromCypress(
     if (options.Attributes) {
         cypressAttributes = CreateCypressOperationAttributes(
             *options.Attributes,
-            /* needHeavyRuntimeParameters */ options.Attributes->contains("runtime_parameters"));
+            /*needHeavyRuntimeParameters*/ options.Attributes->contains("runtime_parameters"));
 
         if (!options.Attributes->contains("controller_agent_address")) {
             cypressAttributes->push_back("controller_agent_address");
@@ -333,7 +333,7 @@ TClient::TGetOperationFromCypressResult TClient::DoGetOperationFromCypress(
 
     TGetOperationFromCypressResult result;
     result.NodeModificationTime = modificationTime;
-    Deserialize(result.Operation.emplace(), attributeDictionary, /* clone */ false);
+    Deserialize(result.Operation.emplace(), attributeDictionary, /*clone*/ false);
     return result;
 }
 
@@ -361,13 +361,10 @@ std::optional<TOperation> TClient::DoGetOperationFromArchive(
     try {
         THashSet<TString> ignoredAttributes = {"suspended", "memory_usage", "has_failed_jobs"};
 
-        if (DoGetOperationsArchiveVersion() < 46) {
-            ignoredAttributes.insert("provided_spec");
-        }
         auto attributes = DeduceActualAttributes(
             options.Attributes,
-            /* requiredAttributes */ {},
-            /* defaultAttributes */ SupportedOperationAttributes,
+            /*requiredAttributes*/ {},
+            /*defaultAttributes*/ SupportedOperationAttributes,
             ignoredAttributes);
 
         operations = LookupOperationsInArchiveTyped(
@@ -853,7 +850,7 @@ void TClient::DoListOperationsFromCypress(
 
         const auto cypressRequestedAttributes = CreateCypressOperationAttributes(
             requestedAttributes,
-            /* needHeavyRuntimeParameters */ requestedAttributes.contains("runtime_parameters"));
+            /*needHeavyRuntimeParameters*/ requestedAttributes.contains("runtime_parameters"));
         filter->ForEachOperationImmutable([&] (int /*index*/, const TListOperationsFilter::TLightOperation& lightOperation) {
             auto req = TYPathProxy::Get(GetOperationPath(lightOperation.Id));
             SetCachingHeader(req, options);
@@ -1032,14 +1029,6 @@ THashMap<TOperationId, TOperation> TClient::DoListOperationsFromArchive(
 
     if (!options.ToTime) {
         THROW_ERROR_EXCEPTION("Missing required parameter \"to_time\"");
-    }
-
-    if (options.PoolTree) {
-        constexpr int requiredVersion = 44;
-        if (DoGetOperationsArchiveVersion() < requiredVersion) {
-            THROW_ERROR_EXCEPTION("\"pool_tree\" filter is not supported in operations archive of version < %v",
-                requiredVersion);
-        }
     }
 
     auto addCommonWhereConjuncts = [&] (NQueryClient::TQueryBuilder* builder) {

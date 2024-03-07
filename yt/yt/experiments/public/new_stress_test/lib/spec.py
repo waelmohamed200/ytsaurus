@@ -213,6 +213,7 @@ spec_template = {
         "insertion_probability": 0.7,
         "deletion_probability": 0.1,
         "max_inline_hunk_size": None,
+        "enable_value_dictionary_compression": False,
     },
 
     "ordered": {
@@ -251,6 +252,7 @@ spec_template = {
         "skip_verify": False,
         "skip_lookup": False,
         "skip_select": False,
+        "skip_group_by": True,
         "ignore_failed_mr": False,
     },
 

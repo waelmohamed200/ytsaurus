@@ -14,6 +14,8 @@
 
 #include <library/cpp/yt/threading/rw_spin_lock.h>
 
+#include <stack>
+
 namespace NYT::NDiscoveryServer {
 
 using namespace NYPath;
@@ -171,7 +173,7 @@ void BuildMemberAttributesFragment(
 
 void BuildMemberAttributesAsMap(
     const TMemberPtr& member,
-    const TAttributeFilter& /* attributeKeys */,
+    const TAttributeFilter& /*attributeKeys*/,
     TFluentAny fluent)
 {
     auto reader = member->CreateReader();
@@ -395,9 +397,9 @@ class TGroupTree::TImpl
 public:
     explicit TImpl(NLogging::TLogger logger)
         : Root_(New<TGroupNode>(
-            /* key */ TString(),
-            /* path */ TYPath(),
-            /* parent */ nullptr))
+            /*key*/ TString(),
+            /*path*/ TYPath(),
+            /*parent*/ nullptr))
         , Logger(std::move(logger))
     {
         auto guard = WriterGuard(Lock_);

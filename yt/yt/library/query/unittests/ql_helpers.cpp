@@ -1,11 +1,17 @@
 #include "ql_helpers.h"
 
+#include <yt/yt/library/query/engine/folding_profiler.h>
+
 #include <yt/yt/core/yson/public.h>
 #include <yt/yt/core/yson/string.h>
 
 #include <yt/yt/core/ytree/convert.h>
 
 namespace NYT::NQueryClient {
+
+using NCodegen::EExecutionBackend;
+
+////////////////////////////////////////////////////////////////////////////////
 
 void PrintTo(TConstExpressionPtr expr, ::std::ostream* os)
 {
@@ -97,6 +103,32 @@ TFuture<TDataSplit> RaiseTableNotFound(const TYPath& path)
     return MakeFuture<TDataSplit>(TError(
         "Could not find table %v",
         path));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void ProfileForBothExecutionBackends(
+    const TConstBaseQueryPtr& query,
+    llvm::FoldingSetNodeID* id,
+    TCGVariables* variables,
+    TJoinSubqueryProfiler joinProfiler)
+{
+    Profile(query, id, variables, joinProfiler, /*useCanonicalNullRelations*/ false, /*executionBackend*/ EExecutionBackend::Native)();
+    if (EnableWebAssemblyInUnitTests()) {
+        Profile(query, id, variables, joinProfiler, /*useCanonicalNullRelations*/ false, /*executionBackend*/ EExecutionBackend::WebAssembly)();
+    }
+}
+
+void ProfileForBothExecutionBackends(
+    const TConstExpressionPtr& expr,
+    const TTableSchemaPtr& schema,
+    llvm::FoldingSetNodeID* id,
+    TCGVariables* variables)
+{
+    Profile(expr, schema, id, variables, /*useCanonicalNullRelations*/ false, /*executionBackend*/ EExecutionBackend::Native)();
+    if (EnableWebAssemblyInUnitTests()) {
+        Profile(expr, schema, id, variables, /*useCanonicalNullRelations*/ false, /*executionBackend*/ EExecutionBackend::WebAssembly)();
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

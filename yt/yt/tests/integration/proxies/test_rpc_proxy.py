@@ -1135,6 +1135,14 @@ class TestCompressionRpcProxy(YTEnvSetup):
         lookup_rows("//tmp/d", [{"key": 0}])
 
 
+class TestModernCompressionRpcProxy(TestCompressionRpcProxy):
+    DELTA_DRIVER_CONFIG = {
+        "request_codec": "lz4",
+        "response_codec": "quick_lz",
+        "enable_legacy_rpc_codecs": False,
+    }
+
+
 ##################################################################
 
 
@@ -1271,7 +1279,7 @@ class TestRpcProxyHeapUsageStatistics(TestRpcProxyHeapUsageStatisticsBase):
 
         wait(lambda: self.check_memory_usage(get(rpc_proxy_agent_orchid + "/heap_usage_statistics"), user))
 
-    @authors("ni-stoiko")
+    @authors("ni-stoiko", "galtsev")
     @pytest.mark.timeout(120)
     @flaky(max_runs=3)
     def test_heap_usage_gauge(self):

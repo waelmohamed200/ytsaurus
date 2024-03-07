@@ -328,10 +328,10 @@ public:
         i64 rowsToAdd = rowsPerJob;
         int sliceIndex = 0;
         auto currentDataSlice = dataSlices[0];
-        TChunkStripePtr stripe = New<TChunkStripe>(false /* foreign */, true /* solid */);
+        TChunkStripePtr stripe = New<TChunkStripe>(false /*foreign*/, true /*solid*/);
         auto flushStripe = [&] {
             AddStripe(std::move(stripe));
-            stripe = New<TChunkStripe>(false /* foreign */, true /* solid */);
+            stripe = New<TChunkStripe>(false /*foreign*/, true /*solid*/);
         };
         while (true) {
             i64 sliceRowCount = currentDataSlice->GetRowCount();
@@ -513,7 +513,7 @@ private:
 
             bool hasNontrivialLimits = !chunk->IsCompleteChunk();
 
-            auto codecId = NErasure::ECodec(chunk->GetErasureCodec());
+            auto codecId = chunk->GetErasureCodec();
             if (hasNontrivialLimits || codecId == NErasure::ECodec::None || !SliceErasureChunksByParts_) {
                 // TODO(max42): rewrite slicing, SliceEvenly is a weird approach.
                 auto slices = dataSlice->ChunkSlices[0]->SliceEvenly(

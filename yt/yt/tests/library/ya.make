@@ -4,9 +4,10 @@ NO_CHECK_IMPORTS()
 
 PEERDIR(
     yt/python/yt
-    yt/python/yt/wrapper
     yt/python/yt/environment
     yt/python/yt/environment/arcadia_interop
+    yt/python/yt/sequoia_tools
+    yt/python/yt/wrapper
     yt/yt/python/yt_driver_bindings
     yt/yt/python/yt_yson_bindings
     yt/yt_proto/yt/core
@@ -14,6 +15,7 @@ PEERDIR(
     contrib/python/decorator
     contrib/python/flaky
     contrib/python/grpcio
+    contrib/python/python-dateutil
     library/python/porto
     library/cpp/xdelta3/py_bindings
 )

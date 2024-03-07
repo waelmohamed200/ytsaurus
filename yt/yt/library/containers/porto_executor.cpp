@@ -35,6 +35,50 @@ static constexpr auto RetryInterval = TDuration::MilliSeconds(100);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+static const std::vector<TDevice> DefaultContainerDevices = {
+    {
+        .DeviceName = "/dev/kvm",
+        .Access = "rw",
+    },
+    {
+        .DeviceName = "/dev/fuse",
+        .Access = "rw",
+    },
+    {
+        .DeviceName = "/dev/null",
+        .Access = "rw",
+    },
+    {
+        .DeviceName = "/dev/zero",
+        .Access = "rw",
+    },
+    {
+        .DeviceName = "/dev/full",
+        .Access = "rw",
+    },
+    {
+        .DeviceName = "/dev/random",
+        .Access = "rw",
+    },
+    {
+        .DeviceName = "/dev/urandom",
+        .Access = "rw",
+    },
+    {
+        .DeviceName = "/dev/tty",
+        .Access = "rw",
+    },
+    {
+        .DeviceName = "/dev/null",
+        .Access = "rw",
+        // It is necessary for the consistency of default devices in the container, but access must be denied.
+        // See porto/src/device.cpp::TDevices::InitDefault and https://docs.kernel.org/admin-guide/serial-console.html.
+        .Path = "/dev/console"
+    }
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 TString PortoErrorCodeFormatter(int code)
 {
     return TEnumTraits<EPortoErrorCode>::ToString(static_cast<EPortoErrorCode>(code));
@@ -129,6 +173,14 @@ public:
 
         Api_->SetTimeout(Config_->ApiTimeout.Seconds());
         Api_->SetDiskTimeout(Config_->ApiDiskTimeout.Seconds());
+
+        Profiler_.AddFuncGauge("/volume_surplus", MakeStrong(this), [this] () {
+            return VolumeSurplus_;
+        });
+
+        Profiler_.AddFuncGauge("/layer_surplus", MakeStrong(this), [this] () {
+            return LayerSurplus_;
+        });
 
         PollExecutor_->Start();
     }
@@ -351,6 +403,13 @@ public:
             "ListVolumePaths");
     }
 
+    TFuture<std::vector<TVolumeSpec>> GetVolumes() override
+    {
+        return ExecutePortoApiAction(
+            &TPortoExecutor::DoGetVolumes,
+            "GetVolume");
+    }
+
     // This method allocates Porto "resources", so it should be uncancellable.
     TFuture<void> ImportLayer(const TString& archivePath, const TString& layerId, const TString& place) override
     {
@@ -399,6 +458,11 @@ private:
     std::vector<TString> Containers_;
     THashMap<TString, TPromise<int>> ContainerMap_;
     TSingleShotCallbackList<void(const TError&)> Failed_;
+
+    //! Gauge counting actual difference between the number of created and unlinked volumes.
+    i64 VolumeSurplus_ = 0;
+    //! Gauge counting actual difference between the number of imported and removed layers.
+    i64 LayerSurplus_ = 0;
 
     struct TCommandEntry
     {
@@ -576,10 +640,20 @@ private:
             portoSpec.mutable_controllers()->add_controller(controller);
         }
 
-        for (const auto& device : spec.Devices) {
-            auto* portoDevice = portoSpec.mutable_devices()->add_device();
-            portoDevice->set_device(device.DeviceName);
-            portoDevice->set_access(device.Enabled ? "rw" : "-");
+        const auto& devices = !spec.Devices.empty()
+            ? spec.Devices
+            : DefaultContainerDevices;
+
+        for (const auto& device : devices) {
+            if (NFS::Exists(device.DeviceName)) {
+                auto* portoDevice = portoSpec.mutable_devices()->add_device();
+                portoDevice->set_device(device.DeviceName);
+                portoDevice->set_access(device.Access);
+
+                if (device.Path) {
+                    portoDevice->set_path(device.Path.value());
+                }
+            }
         }
 
         auto addBind = [&] (const TBind& bind) {
@@ -858,6 +932,7 @@ private:
             [&] { return Api_->CreateVolume(volume, propertyMap); },
             "CreateVolume",
             /*idempotent*/ false);
+        VolumeSurplus_ += 1;
         return volume;
     }
 
@@ -875,6 +950,7 @@ private:
             [&] { return Api_->UnlinkVolume(path, container); },
             "UnlinkVolume",
             /*idempotent*/ false);
+        VolumeSurplus_ -= 1;
     }
 
     std::vector<TString> DoListVolumePaths()
@@ -887,12 +963,40 @@ private:
         return {volumes.begin(), volumes.end()};
     }
 
+    std::vector<TVolumeSpec> DoGetVolumes()
+    {
+        const Porto::TGetVolumeResponse* getResponse;
+
+        ExecuteApiCall(
+            [&] {
+                getResponse = Api_->GetVolumes();
+                return getResponse ? EError::Success : EError::Unknown;
+            },
+            "GetVolume",
+            /*idempotent*/ true);
+
+        YT_VERIFY(getResponse);
+
+        std::vector<TVolumeSpec> specs;
+        specs.reserve(getResponse->volume_size());
+
+        for (auto& spec : getResponse->volume()) {
+            specs.emplace_back(TVolumeSpec{
+                .Path = spec.path(),
+                .Backend = spec.backend(),
+            });
+        }
+
+        return specs;
+    }
+
     void DoImportLayer(const TString& archivePath, const TString& layerId, const TString& place)
     {
         ExecuteApiCall(
             [&] { return Api_->ImportLayer(layerId, archivePath, false, place); },
             "ImportLayer",
             /*idempotent*/ false);
+        LayerSurplus_ += 1;
     }
 
     void DoRemoveLayer(const TString& layerId, const TString& place, bool async)
@@ -901,6 +1005,7 @@ private:
             [&] { return Api_->RemoveLayer(layerId, place, async); },
             "RemoveLayer",
             /*idempotent*/ false);
+        LayerSurplus_ -= 1;
     }
 
     std::vector<TString> DoListLayers(const TString& place)

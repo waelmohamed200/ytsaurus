@@ -30,6 +30,10 @@ def get_master_config():
         enable_local_read_busy_wait = %false;
     };
 
+    cell_manager = {
+        create_virtual_cell_maps_by_default = %true;
+    };
+
     timestamp_manager = {
         commit_advance = 2000;
         request_backoff_time = 100;
@@ -110,6 +114,7 @@ def get_dynamic_master_config():
         expiration_check_period = 200;
         expiration_backoff_time = 200;
         scion_removal_period = 1000;
+        virtual_map_read_offload_batch_size = 2;
     };
 
     transaction_manager = {
@@ -153,6 +158,12 @@ def get_dynamic_master_config():
         enable_bulk_insert = %true;
         enable_aggressive_tablet_statistics_validation = %true;
         forbid_arbitrary_data_versions_in_retention_config = %true;
+
+        cell_hydra_persistence_synchronizer =  {
+            use_hydra_persistence_directory = %true;
+            migrate_to_virtual_cell_maps = %true;
+            synchronization_period = 100;
+        };
     };
 
     sequoia_manager = {};
@@ -169,6 +180,10 @@ def get_dynamic_master_config():
                 };
             };
         };
+    };
+
+    cell_master = {
+        alert_update_period = 500;
     };
 }
 """)
@@ -530,7 +545,7 @@ def get_node_config():
         };
 
         changelogs = {
-            lock_transaction_timeout = 10000;
+            lock_transaction_timeout = 5000;
         };
 
         table_config_manager = {
@@ -635,7 +650,7 @@ def get_chaos_node_config():
                     size = 4;
                     occupant = {
                         changelogs = {
-                            lock_transaction_timeout = 10000;
+                            lock_transaction_timeout = 5000;
                         };
                         hive_manager = {
                             ping_period = 1000;
@@ -695,6 +710,7 @@ def get_dynamic_node_config():
                     backoff = 5000;
                 };
                 total_confirmation_period = 5000;
+                job_staleness_delay = 5000;
                 running_job_statistics_sending_backoff = 0;
                 send_waiting_jobs = %true;
                 heartbeat_period = 100;

@@ -4,6 +4,7 @@
 #include "cg_helpers.h"
 #include "llvm_folding_set.h"
 #include "position_independent_value_caller.h"
+#include "web_assembly_caller.h"
 
 #include <yt/yt/library/codegen/module.h>
 #include <yt/yt/library/codegen/public.h>
@@ -29,6 +30,7 @@ using namespace NTableClient;
 using namespace NConcurrency;
 
 using NCodegen::TCGModule;
+using NCodegen::EExecutionBackend;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Operator helpers
@@ -216,10 +218,37 @@ TValueTypeLabels CodegenHasherBody(
 
     // indexPhi, cmpResultPhi, returnBB, gotoNextBB
 
-    BasicBlock* hashScalarBB = nullptr;
+    BasicBlock* hashInt8ScalarBB = nullptr;
     {
-        hashScalarBB = builder->CreateBBHere("hashNull");
-        builder->SetInsertPoint(hashScalarBB);
+        hashInt8ScalarBB = builder->CreateBBHere("hashNull");
+        builder->SetInsertPoint(hashInt8ScalarBB);
+
+        auto valuePtr = builder->CreateInBoundsGEP(
+            TValueTypeBuilder::Get(builder->getContext()),
+            values,
+            indexPhi);
+        auto value = TCGValue::LoadFromRowValue(
+            builder,
+            valuePtr,
+            EValueType::Boolean);
+
+        result2Phi->addIncoming(builder->getInt64(0), builder->GetInsertBlock());
+        BasicBlock* hashDataBB = builder->CreateBBHere("hashData");
+        builder->CreateCondBr(value.GetIsNull(builder), gotoNextBB, hashDataBB);
+
+        builder->SetInsertPoint(hashDataBB);
+        Value* hashResult = CodegenFingerprint64(
+            builder,
+            builder->CreateIntCast(value.GetTypedData(builder), builder->getInt64Ty(), /*isSigned*/ false));
+
+        result2Phi->addIncoming(hashResult, builder->GetInsertBlock());
+        builder->CreateBr(gotoNextBB);
+    };
+
+    BasicBlock* hashInt64ScalarBB = nullptr;
+    {
+        hashInt64ScalarBB = builder->CreateBBHere("hashNull");
+        builder->SetInsertPoint(hashInt64ScalarBB);
 
         auto valuePtr = builder->CreateInBoundsGEP(
             TValueTypeBuilder::Get(builder->getContext()),
@@ -278,17 +307,17 @@ TValueTypeLabels CodegenHasherBody(
     Value* offsetPtr = builder->CreateGEP(builder->getInt8PtrTy(), labelsArray, indexPhi);
     Value* offset = builder->CreateLoad(builder->getInt8PtrTy(), offsetPtr);
     auto* indirectBranch = builder->CreateIndirectBr(offset);
-    indirectBranch->addDestination(hashScalarBB);
+    indirectBranch->addDestination(hashInt8ScalarBB);
+    indirectBranch->addDestination(hashInt64ScalarBB);
     indirectBranch->addDestination(cmpStringBB);
 
     return TValueTypeLabels{
-        llvm::BlockAddress::get(hashScalarBB),
-        llvm::BlockAddress::get(hashScalarBB),
-        llvm::BlockAddress::get(hashScalarBB),
-        llvm::BlockAddress::get(hashScalarBB),
+        llvm::BlockAddress::get(hashInt8ScalarBB),
+        llvm::BlockAddress::get(hashInt64ScalarBB),
+        llvm::BlockAddress::get(hashInt64ScalarBB),
+        llvm::BlockAddress::get(hashInt64ScalarBB),
         llvm::BlockAddress::get(cmpStringBB)
     };
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -425,6 +454,16 @@ TValueTypeLabels CodegenLessComparerBody(
         return cmpBB;
     };
 
+    BasicBlock* cmpBooleanBB = cmpScalar(
+        [] (TCGBaseContext& builder, Value* lhsData, Value* rhsData) {
+            return builder->CreateICmpEQ(lhsData, rhsData);
+        },
+        [] (TCGBaseContext& builder, Value* lhsData, Value* rhsData) {
+            return builder->CreateICmpULT(lhsData, rhsData);
+        },
+        EValueType::Boolean,
+        "bool");
+
     BasicBlock* cmpIntBB = cmpScalar(
         [] (TCGBaseContext& builder, Value* lhsData, Value* rhsData) {
             return builder->CreateICmpEQ(lhsData, rhsData);
@@ -539,13 +578,14 @@ TValueTypeLabels CodegenLessComparerBody(
     Value* offsetPtr = builder->CreateGEP(builder->getInt8PtrTy(), labelsArray, indexPhi);
     Value* offset = builder->CreateLoad(builder->getInt8PtrTy(), offsetPtr);
     auto* indirectBranch = builder->CreateIndirectBr(offset);
+    indirectBranch->addDestination(cmpBooleanBB);
     indirectBranch->addDestination(cmpIntBB);
     indirectBranch->addDestination(cmpUintBB);
     indirectBranch->addDestination(cmpDoubleBB);
     indirectBranch->addDestination(cmpStringBB);
 
     return TValueTypeLabels{
-        llvm::BlockAddress::get(cmpIntBB),
+        llvm::BlockAddress::get(cmpBooleanBB),
         llvm::BlockAddress::get(cmpIntBB),
         llvm::BlockAddress::get(cmpUintBB),
         llvm::BlockAddress::get(cmpDoubleBB),
@@ -721,10 +761,10 @@ llvm::GlobalVariable* TComparerManager::GetLabelsArray(
 ////////////////////////////////////////////////////////////////////////////////
 
 Function* TComparerManager::GetHasher(
-        const std::vector<EValueType>& types,
-        const TCGModulePtr& module,
-        size_t start,
-        size_t finish)
+    const std::vector<EValueType>& types,
+    const TCGModulePtr& module,
+    size_t start,
+    size_t finish)
 {
     llvm::FoldingSetNodeID id;
     id.AddInteger(start);
@@ -2407,7 +2447,8 @@ size_t MakeCodegenScanOp(
     TCodegenSource* codegenSource,
     size_t* slotCount,
     const std::vector<int>& stringLikeColumnIndices,
-    int rowSchemaInformationIndex)
+    int rowSchemaInformationIndex,
+    EExecutionBackend executionBackend)
 {
     size_t consumerSlot = (*slotCount)++;
 
@@ -2415,15 +2456,24 @@ size_t MakeCodegenScanOp(
         consumerSlot,
         codegenSource = std::move(*codegenSource),
         stringLikeColumnIndices,
-        rowSchemaInformationIndex
+        rowSchemaInformationIndex,
+        executionBackend
     ] (TCGOperatorContext& builder) {
         codegenSource(builder);
 
-        auto consume = MakeConsumerWithPIConversion(
-            builder,
-            "ScanOpInner",
-            consumerSlot,
-            stringLikeColumnIndices);
+        auto consume = TLlvmClosure();
+        if (executionBackend == EExecutionBackend::WebAssembly) {
+            consume = MakeConsumer(
+                builder,
+                "ScanOpInner",
+                consumerSlot);
+        } else {
+            consume = MakeConsumerWithPIConversion(
+                builder,
+                "ScanOpInner",
+                consumerSlot,
+                stringLikeColumnIndices);
+        }
 
         builder->CreateCall(
             builder.Module->GetRoutine("ScanOpHelper"),
@@ -2846,8 +2896,7 @@ size_t MakeCodegenArrayJoinOp(
             "expressionClosurePtr");
 
         builder[producerSlot] = [&] (TCGContext& builder, Value* values) {
-            using TBool = NCodegen::TTypes::i<1>;
-            auto predicate = MakeClosure<TBool(TExpressionContext*, TPIValue*)>(builder, "arrayJoinPredicate", [&] (
+            auto predicate = MakeClosure<bool(TExpressionContext*, TPIValue*)>(builder, "arrayJoinPredicate", [&] (
                 TCGOperatorContext& builder,
                 Value* buffer,
                 Value* unfoldedValues
@@ -2865,7 +2914,10 @@ size_t MakeCodegenArrayJoinOp(
 
                 auto* notIsNull = builder->CreateNot(predicateResult.GetIsNull(builder));
                 auto* isTrue = predicateResult.GetTypedData(builder);
-                innerBuilder->CreateRet(builder->CreateAnd(notIsNull, isTrue));
+
+                Value* result = builder->CreateAnd(notIsNull, isTrue);
+                Value* casted = innerBuilder->CreateIntCast(result, innerBuilder->getInt8Ty(), false);
+                innerBuilder->CreateRet(casted);
             });
 
             int arrayCount = arrayIds.size();
@@ -3235,6 +3287,7 @@ TGroupOpSlots MakeCodegenGroupOp(
                 comparerManager->GetEqComparer(keyTypes, builder.Module, 0, commonPrefixWithPrimaryKey),
                 comparerManager->GetHasher(keyTypes, builder.Module, commonPrefixWithPrimaryKey, keyTypes.size()),
                 comparerManager->GetEqComparer(keyTypes, builder.Module, commonPrefixWithPrimaryKey, keyTypes.size()),
+
                 builder->getInt32(keyTypes.size()),
                 builder->getInt32(stateTypes.size()),
 
@@ -3623,8 +3676,20 @@ void MakeCodegenWriteOp(
 ////////////////////////////////////////////////////////////////////////////////
 
 template <typename TSignature, typename TPISignature>
-TCallback<TSignature> BuildCGEntrypoint(TCGModulePtr module, const TString& entryFunctionName)
+TCallback<TSignature> BuildCGEntrypoint(TCGModulePtr module, const TString& entryFunctionName, EExecutionBackend executionBackend)
 {
+    if (executionBackend == EExecutionBackend::WebAssembly) {
+        auto caller = New<TCGWebAssemblyCaller<TSignature, TPISignature>>(
+    #ifdef YT_ENABLE_BIND_LOCATION_TRACKING
+            FROM_HERE,
+    #endif
+            module,
+            entryFunctionName);
+
+        auto* staticInvoke = &TCGWebAssemblyCaller<TSignature, TPISignature>::StaticInvoke;
+        return TCallback<TSignature>(caller, staticInvoke);
+    }
+
     auto piFunction = module->GetCompiledFunction<TPISignature>(entryFunctionName);
     auto caller = New<TCGPICaller<TSignature, TPISignature>>(
 #ifdef YT_ENABLE_BIND_LOCATION_TRACKING
@@ -3632,18 +3697,33 @@ TCallback<TSignature> BuildCGEntrypoint(TCGModulePtr module, const TString& entr
 #endif
         piFunction);
 
-    auto staticInvoke = &TCGPICaller<TSignature, TPISignature>::StaticInvoke;
+    auto* staticInvoke = &TCGPICaller<TSignature, TPISignature>::StaticInvoke;
     return TCallback<TSignature>(caller, staticInvoke);
+}
+
+std::unique_ptr<NWebAssembly::IWebAssemblyCompartment> BuildImage(const TCGModulePtr& module, EExecutionBackend executionBackend)
+{
+    if (executionBackend == EExecutionBackend::WebAssembly) {
+        module->BuildWebAssembly();
+        auto bytecode = module->GetWebAssemblyBytecode();
+        auto compartment = NWebAssembly::CreateBaseImage();
+        compartment->AddModule(bytecode);
+        compartment->Strip();
+        return compartment;
+    }
+
+    return {};
 }
 
 TCGQueryImage CodegenQuery(
     const TCodegenSource* codegenSource,
-    size_t slotCount)
+    size_t slotCount,
+    EExecutionBackend executionBackend)
 {
-    auto module = TCGModule::Create(GetQueryRoutineRegistry());
+    auto cgModule = TCGModule::Create(GetQueryRoutineRegistry(executionBackend), executionBackend);
     const auto entryFunctionName = TString("EvaluateQuery");
 
-    MakeFunction<TCGPIQuerySignature>(module, entryFunctionName.c_str(), [&] (
+    auto* queryFunction = MakeFunction<TCGPIQuerySignature>(cgModule, entryFunctionName.c_str(), [&] (
         TCGBaseContext& baseBuilder,
         Value* literals,
         Value* opaqueValuesPtr,
@@ -3661,21 +3741,29 @@ TCGQueryImage CodegenQuery(
         builder->CreateRetVoid();
     });
 
-    module->ExportSymbol(entryFunctionName);
+    cgModule->ExportSymbol(entryFunctionName);
 
-    return TCGQueryImage(BuildCGEntrypoint<TCGQuerySignature, TCGPIQuerySignature>(module, entryFunctionName));
+    if (executionBackend == EExecutionBackend::WebAssembly) {
+        queryFunction->addFnAttr("wasm-export-name", entryFunctionName.c_str());
+    }
+
+    return {
+        BuildCGEntrypoint<TCGQuerySignature, TCGPIQuerySignature>(cgModule, entryFunctionName, executionBackend),
+        BuildImage(cgModule, executionBackend),
+    };
 }
 
 TCGExpressionImage CodegenStandaloneExpression(
     const TCodegenFragmentInfosPtr& fragmentInfos,
-    size_t exprId)
+    size_t exprId,
+    EExecutionBackend executionBackend)
 {
-    auto module = TCGModule::Create(GetQueryRoutineRegistry());
+    auto cgModule = TCGModule::Create(GetQueryRoutineRegistry(executionBackend), executionBackend);
     const auto entryFunctionName = TString("EvaluateExpression");
 
-    CodegenFragmentBodies(module, *fragmentInfos);
+    CodegenFragmentBodies(cgModule, *fragmentInfos);
 
-    MakeFunction<TCGPIExpressionSignature>(module, entryFunctionName.c_str(), [&] (
+    auto* expressionFunction = MakeFunction<TCGPIExpressionSignature>(cgModule, entryFunctionName.c_str(), [&] (
         TCGBaseContext& baseBuilder,
         Value* literals,
         Value* opaqueValuesPtr,
@@ -3694,21 +3782,29 @@ TCGExpressionImage CodegenStandaloneExpression(
         builder->CreateRetVoid();
     });
 
-    module->ExportSymbol(entryFunctionName);
+    cgModule->ExportSymbol(entryFunctionName);
 
-    return TCGExpressionImage(BuildCGEntrypoint<TCGExpressionSignature, TCGPIExpressionSignature>(module, entryFunctionName));
+    if (executionBackend == EExecutionBackend::WebAssembly) {
+        expressionFunction->addFnAttr("wasm-export-name", entryFunctionName.c_str());
+    }
+
+    return {
+        BuildCGEntrypoint<TCGExpressionSignature, TCGPIExpressionSignature>(cgModule, entryFunctionName, executionBackend),
+        BuildImage(cgModule, executionBackend),
+    };
 }
 
 TCGAggregateImage CodegenAggregate(
     TCodegenAggregate codegenAggregate,
     std::vector<EValueType> argumentTypes,
-    EValueType stateType)
+    EValueType stateType,
+    EExecutionBackend executionBackend)
 {
-    auto module = TCGModule::Create(GetQueryRoutineRegistry());
+    auto cgModule = TCGModule::Create(GetQueryRoutineRegistry(executionBackend), executionBackend);
 
     static const auto initName = TString("init");
     {
-        MakeFunction<TCGPIAggregateInitSignature>(module, initName.c_str(), [&] (
+        auto* initFunction = MakeFunction<TCGPIAggregateInitSignature>(cgModule, initName.c_str(), [&] (
             TCGBaseContext& builder,
             Value* buffer,
             Value* resultPtr
@@ -3718,12 +3814,16 @@ TCGAggregateImage CodegenAggregate(
             builder->CreateRetVoid();
         });
 
-        module->ExportSymbol(initName);
+        cgModule->ExportSymbol(initName);
+
+        if (executionBackend == EExecutionBackend::WebAssembly) {
+            initFunction->addFnAttr("wasm-export-name", initName.c_str());
+        }
     }
 
     static const auto updateName = TString("update");
     {
-        MakeFunction<TCGPIAggregateUpdateSignature>(module, updateName.c_str(), [&] (
+        auto* updateFunction = MakeFunction<TCGPIAggregateUpdateSignature>(cgModule, updateName.c_str(), [&] (
             TCGBaseContext& builder,
             Value* buffer,
             Value* statePtr,
@@ -3743,12 +3843,16 @@ TCGAggregateImage CodegenAggregate(
             builder->CreateRetVoid();
         });
 
-        module->ExportSymbol(updateName);
+        cgModule->ExportSymbol(updateName);
+
+        if (executionBackend == EExecutionBackend::WebAssembly) {
+            updateFunction->addFnAttr("wasm-export-name", updateName.c_str());
+        }
     }
 
     static const auto mergeName = TString("merge");
     {
-        MakeFunction<TCGPIAggregateMergeSignature>(module, mergeName.c_str(), [&] (
+        auto* mergeFunction = MakeFunction<TCGPIAggregateMergeSignature>(cgModule, mergeName.c_str(), [&] (
             TCGBaseContext& builder,
             Value* buffer,
             Value* dstStatePtr,
@@ -3762,12 +3866,16 @@ TCGAggregateImage CodegenAggregate(
             builder->CreateRetVoid();
         });
 
-        module->ExportSymbol(mergeName);
+        cgModule->ExportSymbol(mergeName);
+
+        if (executionBackend == EExecutionBackend::WebAssembly) {
+            mergeFunction->addFnAttr("wasm-export-name", mergeName.c_str());
+        }
     }
 
     static const auto finalizeName = TString("finalize");
     {
-        MakeFunction<TCGPIAggregateFinalizeSignature>(module, finalizeName.c_str(), [&] (
+        auto* finalizeFunction = MakeFunction<TCGPIAggregateFinalizeSignature>(cgModule, finalizeName.c_str(), [&] (
             TCGBaseContext& builder,
             Value* buffer,
             Value* resultPtr,
@@ -3781,16 +3889,22 @@ TCGAggregateImage CodegenAggregate(
             builder->CreateRetVoid();
         });
 
-        module->ExportSymbol(finalizeName);
+        cgModule->ExportSymbol(finalizeName);
+
+        if (executionBackend == EExecutionBackend::WebAssembly) {
+            finalizeFunction->addFnAttr("wasm-export-name", finalizeName.c_str());
+        }
     }
 
-    return TCGAggregateImage(
+    return {
         TCGAggregateCallbacks{
-            BuildCGEntrypoint<TCGAggregateInitSignature, TCGPIAggregateInitSignature>(module, initName),
-            BuildCGEntrypoint<TCGAggregateUpdateSignature, TCGPIAggregateUpdateSignature>(module, updateName),
-            BuildCGEntrypoint<TCGAggregateMergeSignature, TCGPIAggregateMergeSignature>(module, mergeName),
-            BuildCGEntrypoint<TCGAggregateFinalizeSignature, TCGPIAggregateFinalizeSignature>(module, finalizeName),
-        });
+            BuildCGEntrypoint<TCGAggregateInitSignature, TCGPIAggregateInitSignature>(cgModule, initName, executionBackend),
+            BuildCGEntrypoint<TCGAggregateUpdateSignature, TCGPIAggregateUpdateSignature>(cgModule, updateName, executionBackend),
+            BuildCGEntrypoint<TCGAggregateMergeSignature, TCGPIAggregateMergeSignature>(cgModule, mergeName, executionBackend),
+            BuildCGEntrypoint<TCGAggregateFinalizeSignature, TCGPIAggregateFinalizeSignature>(cgModule, finalizeName, executionBackend),
+        },
+        BuildImage(cgModule, executionBackend),
+    };
 }
 
 ////////////////////////////////////////////////////////////////////////////////

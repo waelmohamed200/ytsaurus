@@ -216,6 +216,7 @@ def parse_args():
         builder.add_yesno_argument("lookup_hash_table", "enable_lookup_hash_table", help="enable lookup hash table")
         builder.add_argument("lookup_cache_rows_per_tablet", type=int, metavar="N", help="lookup cache rows per tablet")
         builder.add_argument("max_inline_hunk_size", metavar="N", type=int, help="limit on value size to not move the value into a hunk")
+        builder.add_yesno_argument("value_dictionary_compression", "enable_value_dictionary_compression", help="enable value dictionary compression")
 
 
     with builder.group("ordered tables specifics", "ordered"):
@@ -254,6 +255,7 @@ def parse_args():
         builder.add_argument("skip_verify", action="store_true")
         builder.add_argument("skip_lookup", action="store_true")
         builder.add_argument("skip_select", action="store_true")
+        builder.add_argument("skip_group_by", action="store_true")
         builder.add_argument("ignore_failed_mr", action="store_true")
 
     # Leftovers from the previous incarnation.

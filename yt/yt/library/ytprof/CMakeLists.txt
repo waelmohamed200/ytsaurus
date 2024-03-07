@@ -6,6 +6,7 @@
 # original buildsystem will not be accepted.
 
 
+add_subdirectory(allocation_tag_profiler)
 add_subdirectory(api)
 add_subdirectory(http)
 add_subdirectory(proto)
@@ -32,12 +33,12 @@ target_link_libraries(yt-library-ytprof PUBLIC
   yt-yt-core
 )
 target_sources(yt-library-ytprof PRIVATE
-  ${CMAKE_SOURCE_DIR}/yt/yt/library/ytprof/signal_safe_profiler.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/library/ytprof/cpu_profiler.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/library/ytprof/heap_profiler.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/library/ytprof/spinlock_profiler.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/library/ytprof/profile.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/library/ytprof/build_info.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/library/ytprof/external_pprof.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/library/ytprof/symbolize.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/library/ytprof/signal_safe_profiler.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/library/ytprof/cpu_profiler.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/library/ytprof/heap_profiler.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/library/ytprof/spinlock_profiler.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/library/ytprof/profile.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/library/ytprof/build_info.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/library/ytprof/external_pprof.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/library/ytprof/symbolize.cpp
 )

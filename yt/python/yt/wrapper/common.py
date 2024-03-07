@@ -20,6 +20,11 @@ try:
 except ImportError:
     from decorator import decorator
 
+try:
+    import typing  # noqa
+except ImportError:
+    import yt.packages.typing as typing  # noqa
+
 import argparse
 import collections
 import getpass

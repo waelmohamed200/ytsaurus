@@ -60,7 +60,6 @@ void SanitizeJobSpec(NProto::TJobSpec* jobSpec);
 void FromProto(
     TControllerAgentDescriptor* controllerAgentDescriptor,
     const NProto::TControllerAgentDescriptor& controllerAgentDescriptorProto);
-
 void ToProto(
     NProto::TControllerAgentDescriptor* controllerAgentDescriptorProto,
     const TControllerAgentDescriptor& controllerAgentDescriptor);

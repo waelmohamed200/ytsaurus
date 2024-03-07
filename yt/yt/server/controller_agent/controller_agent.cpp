@@ -33,11 +33,10 @@
 
 #include <yt/yt/ytlib/event_log/event_log.h>
 
+#include <yt/yt/ytlib/scheduler/disk_resources.h>
 #include <yt/yt/ytlib/scheduler/job_resources_helpers.h>
 #include <yt/yt/ytlib/scheduler/config.h>
 #include <yt/yt/ytlib/scheduler/helpers.h>
-
-#include <yt/yt/ytlib/program/helpers.h>
 
 #include <yt/yt/client/api/transaction.h>
 
@@ -110,7 +109,7 @@ public:
         const NScheduler::NProto::TScheduleAllocationRequest* request,
         const TExecNodeDescriptorPtr& nodeDescriptor,
         const NScheduler::NProto::TScheduleAllocationSpec& scheduleAllocationSpec)
-        : DiskResources_(request->node_disk_resources())
+        : DiskResources_(FromProto<TDiskResources>(request->node_disk_resources()))
         , AllocationId_(FromProto<TAllocationId>(request->allocation_id()))
         , NodeDescriptor_(nodeDescriptor)
         , ScheduleAllocationSpec_(scheduleAllocationSpec)
@@ -127,7 +126,7 @@ public:
         return NodeDescriptor_;
     }
 
-    const NNodeTrackerClient::NProto::TDiskResources& DiskResources() const override
+    const TDiskResources& DiskResources() const override
     {
         return DiskResources_;
     }
@@ -148,7 +147,7 @@ public:
     }
 
 private:
-    const NNodeTrackerClient::NProto::TDiskResources& DiskResources_;
+    const NScheduler::TDiskResources DiskResources_;
     const TAllocationId AllocationId_;
     const TExecNodeDescriptorPtr& NodeDescriptor_;
     const NScheduler::NProto::TScheduleAllocationSpec ScheduleAllocationSpec_;
@@ -468,7 +467,7 @@ public:
 
         Config_ = config;
 
-        ReconfigureNativeSingletons(Bootstrap_->GetConfig(), Config_);
+        Bootstrap_->OnDynamicConfigChanged(Config_);
 
         ControllerThreadPool_->Configure(Config_->ControllerThreadCount);
 
@@ -663,7 +662,7 @@ public:
                     error,
                     "Unexpected operation disposal fail");
 
-                result.ResidualJobMetrics = controller->PullJobMetricsDelta(/* force */ true);
+                result.ResidualJobMetrics = controller->PullJobMetricsDelta(/*force*/ true);
             }
         }
 
@@ -790,7 +789,7 @@ public:
         return WithSoftTimeout(
             asyncResult,
             Config_->HeavyRequestImmediateResponseTimeout,
-            /* onFinishedAfterTimeout */ BIND(
+            /*onFinishedAfterTimeout*/ BIND(
                 &TImpl::OnHeavyControllerActionFinished<TOperationControllerInitializeResult>,
                 MakeWeak(this),
                 operation->GetId(),
@@ -811,7 +810,7 @@ public:
         return WithSoftTimeout(
             asyncResult,
             Config_->HeavyRequestImmediateResponseTimeout,
-            /* onFinishedAfterTimeout */ BIND(
+            /*onFinishedAfterTimeout*/ BIND(
                 &TImpl::OnHeavyControllerActionFinished<TOperationControllerPrepareResult>,
                 MakeWeak(this),
                 operation->GetId(),
@@ -832,7 +831,7 @@ public:
         return WithSoftTimeout(
             asyncResult,
             Config_->HeavyRequestImmediateResponseTimeout,
-            /* onFinishedAfterTimeout */ BIND(
+            /*onFinishedAfterTimeout*/ BIND(
                 &TImpl::OnHeavyControllerActionFinished<TOperationControllerMaterializeResult>,
                 MakeWeak(this),
                 operation->GetId(),
@@ -853,7 +852,7 @@ public:
         return WithSoftTimeout(
             asyncResult,
             Config_->HeavyRequestImmediateResponseTimeout,
-            /* onFinishedAfterTimeout */ BIND(
+            /*onFinishedAfterTimeout*/ BIND(
                 &TImpl::OnHeavyControllerActionFinished<TOperationControllerReviveResult>,
                 MakeWeak(this),
                 operation->GetId(),
@@ -892,7 +891,7 @@ public:
         return WithSoftTimeout(
             asyncResult,
             Config_->HeavyRequestImmediateResponseTimeout,
-            /* onFinishedAfterTimeout */ BIND(
+            /*onFinishedAfterTimeout*/ BIND(
                 &TImpl::OnHeavyControllerActionFinished<TOperationControllerCommitResult>,
                 MakeWeak(this),
                 operation->GetId(),
@@ -1242,7 +1241,7 @@ private:
             ->GetClient()
             ->GetNativeConnection()
             ->GetClusterDirectorySynchronizer()
-            ->Sync(/* force */ true))
+            ->Sync(/*force*/ true))
             .ThrowOnError();
 
         YT_LOG_INFO("Cluster directory synchronized");
@@ -1256,7 +1255,7 @@ private:
             ->GetClient()
             ->GetNativeConnection()
             ->GetMediumDirectorySynchronizer()
-            ->NextSync(/* force */ true))
+            ->NextSync(/*force*/ true))
             .ThrowOnError();
 
         YT_LOG_INFO("Medium directory received");
@@ -1580,7 +1579,7 @@ private:
 
             // We must to sent job metrics for finished operations.
             if (preparedRequest.OperationJobMetricsSent || flushJobMetrics) {
-                auto jobMetricsDelta = controller->PullJobMetricsDelta(/* force */ flushJobMetrics);
+                auto jobMetricsDelta = controller->PullJobMetricsDelta(/*force*/ flushJobMetrics);
                 ToProto(protoOperation->mutable_job_metrics(), jobMetricsDelta);
             }
 
@@ -1636,6 +1635,46 @@ private:
         }
     }
 
+    bool HasExecNodes(const TIntrusivePtr<TTypedClientResponse<NScheduler::NProto::TRspHeartbeat>>& rsp) const
+    {
+        return !rsp->Attachments().empty() && !rsp->Attachments()[0].Empty();
+    }
+
+    NScheduler::NProto::TExecNodeDescriptorList
+    GetExecNodeDescriptorList(const TIntrusivePtr<TTypedClientResponse<NScheduler::NProto::TRspHeartbeat>>& rsp) const
+    {
+        NScheduler::NProto::TExecNodeDescriptorList descriptorList;
+        DeserializeProtoWithEnvelope(&descriptorList, rsp->Attachments()[0]);
+
+        return descriptorList;
+    }
+
+    void UpdateExecNodeDescriptors(const NScheduler::NProto::TExecNodeDescriptorList& descriptorList)
+    {
+        int onlineExecNodeCount = 0;
+        auto execNodeDescriptors = New<TRefCountedExecNodeDescriptorMap>();
+
+        for (const auto& protoDescriptor : descriptorList.exec_nodes()) {
+            auto descriptor = New<TExecNodeDescriptor>();
+            FromProto(descriptor.Get(), protoDescriptor);
+            if (descriptor->Online) {
+                ++onlineExecNodeCount;
+            }
+            EmplaceOrCrash(
+                *execNodeDescriptors,
+                protoDescriptor.node_id(),
+                std::move(descriptor));
+        }
+
+        JobTracker_->UpdateExecNodes(execNodeDescriptors);
+
+        {
+            auto guard = WriterGuard(ExecNodeDescriptorsLock_);
+            std::swap(CachedExecNodeDescriptors_, execNodeDescriptors);
+            OnlineExecNodeCount_ = onlineExecNodeCount;
+        }
+    }
+
     void SendHeartbeat()
     {
         auto preparedRequest = PrepareHeartbeatRequest();
@@ -1669,29 +1708,8 @@ private:
         HandleAbortedAllocationEvents(rsp);
         HandleOperationEvents(rsp);
 
-        if (rsp->has_exec_nodes()) {
-            int onlineExecNodeCount = 0;
-            auto execNodeDescriptors = New<TRefCountedExecNodeDescriptorMap>();
-            for (const auto& protoDescriptor : rsp->exec_nodes().exec_nodes()) {
-                auto descriptor = New<TExecNodeDescriptor>();
-                FromProto(descriptor.Get(), protoDescriptor);
-                if (descriptor->Online) {
-                    ++onlineExecNodeCount;
-                }
-                EmplaceOrCrash(
-                    *execNodeDescriptors,
-                    protoDescriptor.node_id(),
-                    std::move(descriptor));
-            }
-
-            JobTracker_->UpdateExecNodes(execNodeDescriptors);
-
-            {
-                auto guard = WriterGuard(ExecNodeDescriptorsLock_);
-                std::swap(CachedExecNodeDescriptors_, execNodeDescriptors);
-                OnlineExecNodeCount_ = onlineExecNodeCount;
-            }
-            YT_LOG_DEBUG("Exec node descriptors updated");
+        if (HasExecNodes(rsp)) {
+            GetExecNodesUpdateInvoker()->Invoke(BIND(&TImpl::UpdateExecNodeDescriptors, MakeStrong(this), GetExecNodeDescriptorList(rsp)));
         }
 
         for (const auto& protoOperationId : rsp->operation_ids_to_unregister()) {
@@ -2143,7 +2161,7 @@ private:
     {
     public:
         explicit TOperationsService(const TControllerAgent::TImpl* controllerAgent)
-            : TVirtualMapBase(nullptr /* owningNode */)
+            : TVirtualMapBase(nullptr /*owningNode*/)
             , ControllerAgent_(controllerAgent)
         { }
 

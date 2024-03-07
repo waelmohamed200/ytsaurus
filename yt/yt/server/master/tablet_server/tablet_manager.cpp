@@ -1018,13 +1018,29 @@ public:
 
         const auto& allTablets = table->Tablets();
 
+        auto maxChunkCount = GetDynamicConfig()->MaxChunksPerMountedTablet;
         for (int index = firstTabletIndex; index <= lastTabletIndex; ++index) {
-            auto* tablet = allTablets[index];
-            tablet->ValidateMount(freeze);
+            auto* tabletBase = allTablets[index];
+            tabletBase->ValidateMount(freeze);
+
+            if (tabletBase->GetType() == EObjectType::Tablet) {
+                auto* tablet = tabletBase->As<TTablet>();
+                auto* chunkList = tablet->GetChunkList();
+                auto chunkCount = chunkList->Statistics().ChunkCount;
+
+                if (chunkCount > maxChunkCount) {
+                    THROW_ERROR_EXCEPTION("Cannot mount tablet %v since it has too many chunks",
+                        tablet->GetId())
+                        << TErrorAttribute("chunk_count", chunkCount)
+                        << TErrorAttribute("max_chunks_per_mounted_tablet", maxChunkCount);
+                }
+            }
         }
 
         if (IsTableType(table->GetType())) {
             PrepareMountTable(table->As<TTableNode>());
+        } else if (table->GetType() == EObjectType::HunkStorage) {
+            PrepareMountHunkStorage(table->As<THunkStorageNode>());
         }
 
         ValidateTabletStaticMemoryUpdate(
@@ -1071,6 +1087,15 @@ public:
             THROW_ERROR_EXCEPTION("Cannot mount table since it has invalid backup state %Qlv",
                 backupState);
         }
+    }
+
+    void PrepareMountHunkStorage(THunkStorageNode* hunkStorage)
+    {
+        GetHunkStorageSettings(
+            hunkStorage,
+            Bootstrap_->GetObjectManager(),
+            Bootstrap_->GetChunkManager(),
+            GetDynamicConfig());
     }
 
     void Mount(

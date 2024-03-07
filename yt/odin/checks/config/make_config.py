@@ -152,6 +152,11 @@ def get_checks_config():
             "enable": True
         }
     }
+    enable_tablet_cell_snapshot_convergence = {
+        "tablet_cell_snapshot_convergence": {
+            "enable": True
+        }
+    }
     clock_quorum_health = {
         "clock_quorum_health": {
             "enable": True,
@@ -602,6 +607,7 @@ def get_checks_config():
             },
 
             "broken_gpu_nodes": {
+                "enable": False,
                 "alerts": {
                     "simple": {
                         "period": 120,
@@ -1000,6 +1006,17 @@ def get_checks_config():
                 "check_timeout": 120,
                 "alerts": instant
             },
+            "tablet_cell_snapshot_convergence": {
+                "enable": False,
+                "check_timeout": 120,
+                "alerts": {
+                    "simple": {
+                        "period": 2,
+                        "threshold": 2,
+                        "partially_available_strategy": "force_ok",
+                    },
+                }
+            },
             "tablet_stress_test": {
                 "enable": False,
                 "check_timeout": 120,
@@ -1181,7 +1198,12 @@ def get_checks_config():
             "queue_agent_alerts": {
                 "alerts": instant_force_ok,
                 "options": {
-                    "queue_agent_stage_clusters": ["hume", "pythia", "markov", "ada"]
+                    "queue_agent_stage_clusters": {
+                        "hume": "hume",
+                        "pythia": "pythia",
+                        "markov": "markov",
+                        "ada": "ada",
+                    }
                 }
             },
             "query_tracker_alerts": {
@@ -1207,8 +1229,9 @@ def get_checks_config():
                 enable_discovery,
                 enable_remote_copy,
                 bundle_controller,
-                enable_query_tracker_alerts,
                 system_quotas_only_per_account_tablet_resources,
+                enable_tablet_cell_snapshot_convergence,
+                tablet_stress_test,
             ),
             "arnold": deep_merge(
                 skynet_manager,
@@ -1249,6 +1272,7 @@ def get_checks_config():
                 bundle_controller,
                 system_quotas_with_non_critical_yp_account,
                 system_quotas_only_per_account_tablet_resources,
+                enable_tablet_cell_snapshot_convergence,
             ),
             "hume": deep_merge(
                 dynamic_table_replication_prestable,
@@ -1260,6 +1284,7 @@ def get_checks_config():
                 enable_discovery,
                 bundle_controller,
                 tablet_stress_test,
+                enable_tablet_cell_snapshot_convergence,
             ),
             "freud": deep_merge(
                 clouds,
@@ -1313,7 +1338,6 @@ def get_checks_config():
                 clock_quorum_health,
                 bundle_controller,
                 dynamic_table_replication_stable,
-                enable_query_tracker_with_chyt_alerts,
             ),
             "nash": deep_merge(
                 snapshot_validation,
@@ -1352,6 +1376,7 @@ def get_checks_config():
                 wide_window_quorum_health,
                 bundle_controller,
                 tablet_stress_test,
+                enable_tablet_cell_snapshot_convergence,
             ),
             "locke": deep_merge(
                 snapshot_validation,

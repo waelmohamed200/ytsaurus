@@ -41,7 +41,7 @@ IChunkPoolInput::TCookie TChunkPoolInputBase::AddWithKey(TChunkStripePtr stripe,
     return Add(stripe);
 }
 
-void TChunkPoolInputBase::Reset(TCookie /* cookie */, TChunkStripePtr /* stripe */, TInputChunkMappingPtr /* mapping */)
+void TChunkPoolInputBase::Reset(TCookie /*cookie*/, TChunkStripePtr /*stripe*/, TInputChunkMappingPtr /*mapping*/)
 {
     YT_ABORT();
 }
@@ -61,7 +61,7 @@ TOutputOrderPtr TChunkPoolOutputBase::GetOutputOrder() const
     return nullptr;
 }
 
-i64 TChunkPoolOutputBase::GetLocality(NNodeTrackerClient::TNodeId /* nodeId */) const
+i64 TChunkPoolOutputBase::GetLocality(NNodeTrackerClient::TNodeId /*nodeId*/) const
 {
     return 0;
 }
@@ -120,7 +120,7 @@ NTableClient::TChunkStripeStatisticsVector TChunkPoolOutputWithJobManagerBase<TJ
 }
 
 template <class TJobManager>
-IChunkPoolOutput::TCookie TChunkPoolOutputWithJobManagerBase<TJobManager>::Extract(TNodeId /* nodeId */)
+IChunkPoolOutput::TCookie TChunkPoolOutputWithJobManagerBase<TJobManager>::Extract(TNodeId /*nodeId*/)
 {
     return JobManager_->ExtractCookie();
 }

@@ -200,15 +200,6 @@ public:
         return NScheduler::FormatResources(resources);
     }
 
-    TString FormatResourceUsage(
-        const TJobResources& usage,
-        const TJobResources& limits,
-        const NNodeTrackerClient::NProto::TDiskResources& diskResources) const override
-    {
-        YT_VERIFY(MediumDirectory_);
-        return NScheduler::FormatResourceUsage(usage, limits, diskResources, MediumDirectory_);
-    }
-
     void SerializeResources(const TJobResourcesWithQuota& /*resources*/, NYson::IYsonConsumer* /*consumer*/) const override
     {
         YT_UNIMPLEMENTED();
@@ -278,7 +269,7 @@ public:
     MOCK_METHOD(TFuture<TControllerScheduleAllocationResultPtr>, ScheduleAllocation, (
         const ISchedulingContextPtr& context,
         const TJobResources& allocationLimits,
-        const NNodeTrackerClient::NProto::TDiskResources& diskResourceLimits,
+        const TDiskResources& diskResourceLimits,
         const TString& treeId,
         const TString& poolPath,
         const TFairShareStrategyTreeConfigPtr& treeConfig), (override));
@@ -601,15 +592,22 @@ protected:
 
     TExecNodePtr CreateTestExecNode(const TJobResourcesWithQuota& nodeResources, TBooleanFormulaTags tags = {})
     {
-        NNodeTrackerClient::NProto::TDiskResources diskResources;
-        diskResources.mutable_disk_location_resources()->Add();
-        diskResources.mutable_disk_location_resources(0)->set_limit(GetOrDefault(nodeResources.DiskQuota().DiskSpacePerMedium, NChunkClient::DefaultSlotsMediumIndex));
+        auto diskResources = TDiskResources{
+            .DiskLocationResources = {
+                TDiskResources::TDiskLocationResources{
+                    .Usage = 0,
+                    .Limit = GetOrDefault(
+                        nodeResources.DiskQuota().DiskSpacePerMedium,
+                        NChunkClient::DefaultSlotsMediumIndex),
+                },
+            },
+        };
 
         auto nodeId = ExecNodeId_;
         ExecNodeId_ = NNodeTrackerClient::TNodeId(nodeId.Underlying() + 1);
         auto execNode = New<TExecNode>(nodeId, NNodeTrackerClient::TNodeDescriptor(), ENodeState::Online);
         execNode->SetResourceLimits(nodeResources.ToJobResources());
-        execNode->SetDiskResources(diskResources);
+        execNode->SetDiskResources(std::move(diskResources));
 
         execNode->SetTags(std::move(tags));
 
@@ -1089,12 +1087,15 @@ TEST_F(TFairShareTreeElementTest, TestOperationCountLimits)
 
     pools[2]->IncreaseOperationCount(1);
     pools[2]->IncreaseRunningOperationCount(1);
+    pools[2]->IncreaseLightweightRunningOperationCount(1);
 
     EXPECT_EQ(1, rootElement->OperationCount());
     EXPECT_EQ(1, rootElement->RunningOperationCount());
+    EXPECT_EQ(1, rootElement->LightweightRunningOperationCount());
 
     EXPECT_EQ(1, pools[1]->OperationCount());
     EXPECT_EQ(1, pools[1]->RunningOperationCount());
+    EXPECT_EQ(1, pools[1]->LightweightRunningOperationCount());
 
     pools[1]->IncreaseOperationCount(5);
     EXPECT_EQ(6, rootElement->OperationCount());
@@ -1105,9 +1106,11 @@ TEST_F(TFairShareTreeElementTest, TestOperationCountLimits)
 
     pools[2]->IncreaseOperationCount(-1);
     pools[2]->IncreaseRunningOperationCount(-1);
+    pools[2]->IncreaseLightweightRunningOperationCount(-1);
 
     EXPECT_EQ(0, rootElement->OperationCount());
     EXPECT_EQ(0, rootElement->RunningOperationCount());
+    EXPECT_EQ(0, rootElement->LightweightRunningOperationCount());
 }
 
 TEST_F(TFairShareTreeElementTest, TestIncorrectStatusDueToPrecisionError)

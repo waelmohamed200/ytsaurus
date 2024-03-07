@@ -8,6 +8,7 @@ from .create_data import create_keys, create_sorted_data, pick_keys_for_deletion
 from .write_data import write_data, write_data_bulk_insert, delete_data
 from .aggregate import aggregate_data
 from .select import verify_select
+from .group_by import verify_group_by
 from .mapreduce import MapreduceRunner
 from .lookup import verify_lookup
 from .reshard import reshard_multiple_times
@@ -17,6 +18,10 @@ from .schema import Schema
 import yt.wrapper as yt
 import random
 import copy
+
+
+MAX_KEY_COLUMN_NUMBER = 64
+
 
 class Registry(object):
     def __init__(self, base):
@@ -219,6 +224,15 @@ def test_sorted_tables(base_path, spec, attributes, force):
         if not spec.testing.skip_verify and not spec.testing.skip_lookup:
             verify_lookup(schema, registry.keys, registry.data, registry.base, registry.result, spec)
 
+        # Verify group by.
+        if not spec.testing.skip_verify and not spec.testing.skip_group_by:
+            verify_group_by(
+                schema,
+                registry.data,
+                registry.base,
+                registry.dump + ".group_by",
+                spec)
+
         # Verify selects.
         if not spec.testing.skip_verify and not spec.testing.skip_select:
             key_columns = schema.get_key_column_names()
@@ -277,7 +291,8 @@ def test_sorted_tables(base_path, spec, attributes, force):
 
         if spec.alter:
             unmount_table(registry.base)
-            schema.add_key_column()
+            if len(schema.get_key_columns()) < MAX_KEY_COLUMN_NUMBER:
+                schema.add_key_column()
             logger.info("Altering table")
             yt.alter_table(registry.base, schema=schema.yson())
             yt.alter_table(registry.data, schema=schema.yson_with_unique())

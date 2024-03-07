@@ -55,6 +55,7 @@ SRCS(
     api/native/rpc_helpers.cpp
     api/native/skynet.cpp
     api/native/secondary_index_type_handler.cpp
+    api/native/secondary_index_modification.cpp
     api/native/sync_replica_cache.cpp
     api/native/table_collocation_type_handler.cpp
     api/native/table_reader.cpp
@@ -333,7 +334,9 @@ SRCS(
     query_client/explain.cpp
     query_client/functions_cache.cpp
     query_client/session_coordinator.cpp
+    query_client/tracked_memory_chunk_provider.cpp
     query_client/shuffle.cpp
+    query_client/join_tree.cpp
 
     queue_client/config.cpp
     queue_client/dynamic_state.cpp
@@ -343,6 +346,7 @@ SRCS(
     replicated_table_tracker_client/proto/replicated_table_tracker_client.proto
 
     scheduler/config.cpp
+    scheduler/disk_resources.cpp
     scheduler/helpers.cpp
     scheduler/job_resources_helpers.cpp
     scheduler/job_resources_with_quota.cpp
@@ -501,12 +505,16 @@ GENERATE_YT_RECORD(
     sequoia_client/records/chunk_replicas.yaml
     OUTPUT_INCLUDES
         yt/yt/ytlib/sequoia_client/public.h
+        yt/yt/client/node_tracker_client/public.h
+        library/cpp/yt/yson_string/string.h
 )
 
 GENERATE_YT_RECORD(
     sequoia_client/records/location_replicas.yaml
     OUTPUT_INCLUDES
         yt/yt/ytlib/sequoia_client/public.h
+        yt/yt/client/node_tracker_client/public.h
+        yt/yt/client/object_client/public.h
 )
 
 
@@ -538,6 +546,12 @@ GENERATE_YT_RECORD(
 
 GENERATE_YT_RECORD(
     scheduler/records/operation_id.yaml
+)
+
+GENERATE_YT_RECORD(
+    scheduler/records/job.yaml
+    OUTPUT_INCLUDES
+        yt/yt/core/yson/string.h
 )
 
 GENERATE_YT_RECORD(
@@ -580,6 +594,7 @@ PEERDIR(
     yt/yt/library/formats
     yt/yt/library/query/engine_api
     yt/yt/library/query/row_comparer_api
+    yt/yt/library/web_assembly/api
     yt/yt/library/program
     yt/yt/library/vector_hdrf
     yt/yt/ytlib/discovery_client

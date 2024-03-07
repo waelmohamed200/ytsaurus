@@ -120,13 +120,16 @@ class RetryConfig(object):
         self.enable_retry = enable_retry
         self.retry_limit = retry_limit
         self.retry_interval = retry_interval
+        self.wait_submission_id_retry_limit = None  # Every retry will be 5 seconds
 
     def _to_java(self, gateway):
         jduration = gateway.jvm.tech.ytsaurus.spyt.submit.RetryConfig.durationFromSeconds(
             int(self.retry_interval.total_seconds()))
-        return gateway.jvm.tech.ytsaurus.spyt.submit.RetryConfig(self.enable_retry,
-                                                                 self.retry_limit,
-                                                                 jduration)
+        if self.wait_submission_id_retry_limit:  # COMPAT(alex-shishkin)
+            args = [self.enable_retry, self.retry_limit, jduration, self.wait_submission_id_retry_limit]
+        else:
+            args = [self.enable_retry, self.retry_limit, jduration]
+        return gateway.jvm.tech.ytsaurus.spyt.submit.RetryConfig(*args)
 
 
 class SparkSubmissionClient(object):
@@ -134,9 +137,16 @@ class SparkSubmissionClient(object):
         instance = super(SparkSubmissionClient, cls).__new__(cls)
         return instance
 
-    def __init__(self, gateway, proxy, discovery_path, spyt_version, user, token):
-        self._jclient = gateway.jvm.tech.ytsaurus.spyt.submit.SubmissionClient(proxy, discovery_path,
-                                                                               spyt_version, user, token)
+    def __init__(self, gateway, proxy, discovery_path, user, token):
+        # COMPAT(atokarew): Backward compatibility for CI/CD, remove after 1.77.0 release
+        n_constr_args = gateway.jvm.java.lang.Class.forName('tech.ytsaurus.spyt.submit.SubmissionClient')\
+            .getConstructors()[0].getParameterCount()
+        if n_constr_args == 5:
+            self._jclient = gateway.jvm.tech.ytsaurus.spyt.submit.SubmissionClient(
+                proxy, discovery_path, "1.76.1", user, token)
+        else:
+            # COMPAT END
+            self._jclient = gateway.jvm.tech.ytsaurus.spyt.submit.SubmissionClient(proxy, discovery_path, user, token)
         self.gateway = gateway
 
     def new_launcher(self):

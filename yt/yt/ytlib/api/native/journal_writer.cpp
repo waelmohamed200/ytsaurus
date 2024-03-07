@@ -268,6 +268,7 @@ private:
         TBatchPtr CurrentBatch_;
         TDelayedExecutorCookie CurrentBatchFlushCookie_;
 
+        bool Opened_ = false;
         TPromise<void> OpenedPromise_ = NewPromise<void>();
 
         bool Closing_ = false;
@@ -615,13 +616,6 @@ private:
                     ChunkListId_,
                     CurrentRowIndex_);
             }
-
-            if (auto openDelay = Config_->OpenDelay) {
-                TDelayedExecutor::WaitForDuration(*openDelay);
-            }
-
-            YT_LOG_DEBUG("Journal opened");
-            OpenedPromise_.Set(TError());
         }
 
         void CloseJournal()
@@ -659,6 +653,16 @@ private:
                 Path_);
 
             UploadTransaction_->Detach();
+
+            if (AllocatedChunkSessionPromise_) {
+                AllocatedChunkSessionPromise_.ToFuture()
+                    .Subscribe(BIND([=, this, this_ = MakeStrong(this)] (const TErrorOr<TChunkSessionPtr>& sessionOrError) {
+                        if (sessionOrError.IsOK()) {
+                            const auto& session = sessionOrError.Value();
+                            ScheduleChunkSessionSeal(session);
+                        }
+                    }).Via(Invoker_));
+            }
 
             ClosedPromise_.TrySet(TError());
 
@@ -808,7 +812,6 @@ private:
                 node->PingExecutor->Start();
             }
 
-
             YT_LOG_DEBUG("Confirming chunk (SessionId: %v, ElapsedTime: %v)",
                 session->Id,
                 timer.GetElapsedTime());
@@ -874,6 +877,17 @@ private:
             YT_LOG_DEBUG("Chunk attached (SessionId: %v, ElapsedTime: %v)",
                 session->Id,
                 timer.GetElapsedTime());
+
+            // First successfully opened chunk session indicates that the whole writer is now open.
+            if (!std::exchange(Opened_, true)) {
+                if (auto openDelay = Config_->OpenDelay) {
+                    TDelayedExecutor::WaitForDuration(*openDelay);
+                }
+
+                if (OpenedPromise_.TrySet(TError())) {
+                    YT_LOG_DEBUG("Journal opened");
+                }
+            }
 
             return session;
         }
@@ -1820,7 +1834,6 @@ private:
                 : EncodeChunkId(TChunkIdWithIndex(session->Id.ChunkId, node->Index));
             return TSessionId(chunkId, session->Id.MediumIndex);
         }
-
 
         void ScheduleChunkSessionSeal(const TChunkSessionPtr& session)
         {

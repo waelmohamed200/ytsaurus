@@ -19,6 +19,10 @@
 #include <yt/yt/server/lib/tablet_node/config.h>
 #include <yt/yt/server/lib/tablet_node/performance_counters.h>
 
+#include <yt/yt/ytlib/api/native/connection.h>
+
+#include <yt/yt/ytlib/cell_master_client/cell_directory.h>
+
 #include <yt/yt/ytlib/table_client/performance_counters.h>
 
 #include <yt/yt/ytlib/tablet_client/config.h>
@@ -34,6 +38,7 @@
 
 namespace NYT::NTabletNode {
 
+using namespace NCellMasterClient;
 using namespace NCellarAgent;
 using namespace NCellarClient;
 using namespace NClusterNode;
@@ -73,6 +78,11 @@ public:
         VERIFY_THREAD_AFFINITY(ControlThread);
 
         Bootstrap_->SubscribeMasterConnected(BIND_NO_PROPAGATE(&TMasterConnector::OnMasterConnected, MakeWeak(this)));
+
+        const auto& connection = Bootstrap_->GetClient()->GetNativeConnection();
+        connection->GetMasterCellDirectory()->SubscribeCellDirectoryChanged(
+            BIND(&TMasterConnector::OnMasterCellDirectoryChanged, MakeStrong(this))
+                .Via(Bootstrap_->GetControlInvoker()));
 
         const auto& cellarNodeMasterConnector = Bootstrap_->GetCellarNodeMasterConnector();
         cellarNodeMasterConnector->SubscribeHeartbeatRequested(BIND_NO_PROPAGATE(&TMasterConnector::OnCellarNodeHeartbeatRequested, MakeWeak(this)));
@@ -118,8 +128,23 @@ private:
         StartHeartbeats();
     }
 
+    void OnMasterCellDirectoryChanged(
+        const THashSet<TCellTag>& addedSecondaryCellTags,
+        const TSecondaryMasterConnectionConfigs& /*reconfiguredSecondaryMasterConfigs*/,
+        const THashSet<TCellTag>& removedSecondaryTags)
+    {
+        VERIFY_THREAD_AFFINITY(ControlThread);
+
+        YT_LOG_DEBUG_UNLESS(
+            addedSecondaryCellTags.empty() && removedSecondaryTags.empty(),
+            "Unexpected master cell configuration detected "
+            "(AddedCellTags: %v, RemovedCellTags: %v)",
+            addedSecondaryCellTags,
+            removedSecondaryTags);
+    }
+
     void OnDynamicConfigChanged(
-        const TClusterNodeDynamicConfigPtr& /* oldNodeConfig */,
+        const TClusterNodeDynamicConfigPtr& /*oldNodeConfig*/,
         const TClusterNodeDynamicConfigPtr& newNodeConfig)
     {
         VERIFY_THREAD_AFFINITY(ControlThread);
@@ -135,7 +160,7 @@ private:
         YT_LOG_INFO("Starting tablet node heartbeats");
 
         for (auto cellTag : Bootstrap_->GetMasterCellTags()) {
-            DoScheduleHeartbeat(cellTag, /* immediately */ true);
+            DoScheduleHeartbeat(cellTag, /*immediately*/ true);
         }
     }
 
@@ -173,12 +198,12 @@ private:
                 cellTag);
 
             // Schedule next heartbeat.
-            DoScheduleHeartbeat(cellTag, /* immediately */ false);
+            DoScheduleHeartbeat(cellTag, /*immediately*/ false);
         } else {
             YT_LOG_WARNING(rspOrError, "Error reporting tablet node heartbeat to master (CellTag: %v)",
                 cellTag);
             if (IsRetriableError(rspOrError)) {
-                DoScheduleHeartbeat(cellTag, /* immediately */ false);
+                DoScheduleHeartbeat(cellTag, /*immediately*/ false);
             } else {
                 Bootstrap_->ResetAndRegisterAtMaster();
             }

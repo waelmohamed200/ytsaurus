@@ -392,7 +392,7 @@ protected:
             auto heavyColumnStatisticsExt = GetHeavyColumnStatisticsExt(
                 ColumnarStatistics_,
                 [&] (int columnIndex) {
-                    return TStableName(TString{GetNameTable()->GetName(columnIndex)});
+                    return TColumnStableName(TString{GetNameTable()->GetName(columnIndex)});
                 },
                 columnCount,
                 Options_->MaxHeavyColumns);
@@ -966,7 +966,7 @@ private:
     {
         TUnversionedChunkWriterBase::PrepareChunkMeta();
 
-        YT_LOG_DEBUG("Partition totals: %v", PartitionsExt_.DebugString());
+        YT_LOG_DEBUG("Partition totals: %v", PartitionsExt_.ShortDebugString());
 
         auto meta = EncodingChunkWriter_->GetMeta();
         SetProtoExtension(meta->mutable_extensions(), PartitionsExt_);
@@ -1112,7 +1112,7 @@ protected:
                 if (IdMapping_[valueIt->Id] == -1) {
                     const auto& name = NameTable_->GetNameOrThrow(valueIt->Id);
                     auto stableName = Schema_->GetNameMapping().NameToStableName(name);
-                    IdMapping_[valueIt->Id] = GetChunkNameTable()->GetIdOrRegisterName(stableName.Get());
+                    IdMapping_[valueIt->Id] = GetChunkNameTable()->GetIdOrRegisterName(stableName.Underlying());
                 }
 
                 int id = IdMapping_[valueIt->Id];
@@ -2396,7 +2396,7 @@ private:
             dataSink,
             chunkListId,
             TChunkTimestamps{timestamp, timestamp},
-            /* trafficMeter */ nullptr,
+            /*trafficMeter*/ nullptr,
             Throttler_,
             BlockCache_);
 
@@ -2410,12 +2410,17 @@ private:
         auto objectIdPath = FromObjectId(ObjectId_);
 
         YT_LOG_DEBUG("Closing table");
-        {
-            auto error = WaitFor(UnderlyingWriter_->Close());
-            THROW_ERROR_EXCEPTION_IF_FAILED(error, "Error closing chunk writer");
-        }
+
+        auto underlyingWriterCloseError = WaitFor(UnderlyingWriter_->Close());
 
         StopListenTransaction(UploadTransaction_);
+
+        if (!underlyingWriterCloseError.IsOK()) {
+            YT_VERIFY(UploadTransaction_); // Shouldn't be closing an unopened writer.
+            Y_UNUSED(WaitFor(UploadTransaction_->Abort()));
+            THROW_ERROR_EXCEPTION("Error closing chunk writer")
+                << underlyingWriterCloseError;
+        }
 
         auto proxy = CreateObjectServiceWriteProxy(
             Client_,

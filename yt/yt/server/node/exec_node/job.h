@@ -67,9 +67,15 @@ struct TArtifact
 class TJob
     : public NJobAgent::TResourceHolder
 {
+    struct TNameWithAddress
+    {
+        TString Name;
+        NNet::TIP6Address Address;
+    };
+
 public:
-    DEFINE_SIGNAL(void(), JobPrepared);
-    DEFINE_SIGNAL(void(), JobFinished);
+    DEFINE_SIGNAL(void(TJobPtr), JobPrepared);
+    DEFINE_SIGNAL(void(TJobPtr), JobFinished);
 
 public:
     TJob(
@@ -85,7 +91,7 @@ public:
     ~TJob();
 
     void Start() noexcept;
-    void DoStart();
+    void DoStart(TErrorOr<std::vector<TNameWithAddress>>&& resolvedNodeAddresses);
     bool IsStarted() const;
 
     void Abort(TError error, bool graceful = false);
@@ -217,6 +223,8 @@ public:
 
     void SetStored();
 
+    bool IsGrowingStale(TDuration maxDelay) const;
+
     bool IsJobProxyCompleted() const noexcept;
 
     bool IsInterruptible() const noexcept;
@@ -340,15 +348,16 @@ private:
     NScheduler::EInterruptReason InterruptionReason_ = NScheduler::EInterruptReason::None;
     std::optional<NScheduler::TPreemptedFor> PreemptedFor_;
 
-    //! True if scheduler asked to store this job.
+    //! True if agent asked to store this job.
     bool Stored_ = false;
+    TInstant LastStoredTime_;
 
     TPromise<void> CleanupFinished_ = NewPromise<void>();
 
     YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, JobProbeLock_);
     NJobProxy::IJobProbePtr JobProbe_;
 
-    std::vector<std::pair<TString, NNet::TIP6Address>> ResolvedNodeAddresses_;
+    std::vector<TNameWithAddress> ResolvedNodeAddresses_;
 
     // Artifact statistics.
     NJobAgent::TChunkCacheStatistics ChunkCacheStatistics_;
@@ -419,6 +428,8 @@ private:
 
     std::vector<NContainers::TDevice> GetGpuDevices();
 
+    bool IsFullHostGpuJob() const;
+
     void RunWithWorkspaceBuilder();
 
     IUserSlotPtr GetUserSlot() const;
@@ -484,6 +495,7 @@ private:
     bool IsFatalError(const TError& error);
 
     void EnrichStatisticsWithGpuInfo(TStatistics* statistics);
+    void EnrichStatisticsWithRdmaDeviceInfo(TStatistics* statistics);
     void EnrichStatisticsWithDiskInfo(TStatistics* statistics);
     void EnrichStatisticsWithArtifactsInfo(TStatistics* statistics);
 
@@ -513,7 +525,7 @@ private:
     void ProfileSensor(const TString& sensorName, NProfiling::ISensorWriter* writer, double value);
 
     void CollectSensorsFromStatistics(NProfiling::ISensorWriter* writer);
-    void CollectSensorsFromGpuInfo(NProfiling::ISensorWriter* writer);
+    void CollectSensorsFromGpuAndRdmaDeviceInfo(NProfiling::ISensorWriter* writer);
 
     TFuture<TSharedRef> DumpSensors();
 

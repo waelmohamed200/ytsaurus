@@ -273,6 +273,9 @@ struct TTabletSnapshot
     ITabletHedgingManagerRegistryPtr HedgingManagerRegistry;
 
     TCompressionDictionaryInfos CompressionDictionaryInfos;
+    NTableClient::IDictionaryCompressionFactoryPtr DictionaryCompressionFactory;
+
+    TString TabletCellBundle;
 
     std::atomic<bool> Unregistered = false;
 
@@ -509,10 +512,6 @@ public:
 
     void BuildOrchidYson(NYTree::TFluentMap fluent) const;
 };
-
-////////////////////////////////////////////////////////////////////////////////
-
-DECLARE_REFCOUNTED_CLASS(TSubscriptionGuard);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -908,6 +907,10 @@ private:
 ////////////////////////////////////////////////////////////////////////////////
 
 void BuildTableSettingsOrchidYson(const TTableSettings& options, NYTree::TFluentMap fluent);
+
+NConcurrency::IThroughputThrottlerPtr GetBlobMediumWriteThrottler(
+    const NClusterNode::TClusterNodeDynamicConfigManagerPtr& dynamicConfigManager,
+    const TTabletSnapshotPtr& tabletSnapshot);
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -4,6 +4,8 @@
 
 #include <yt/yt/server/lib/hive/public.h>
 
+#include <yt/yt/ytlib/api/native/public.h>
+
 #include <yt/yt/ytlib/election/public.h>
 
 #include <yt/yt/ytlib/object_client/public.h>
@@ -70,7 +72,6 @@ struct TCrossCellMessage
 struct IMulticellManager
     : public virtual TRefCounted
 {
-public:
     virtual void Initialize() = 0;
 
     virtual bool IsPrimaryMaster() const = 0;
@@ -85,6 +86,7 @@ public:
     virtual NObjectClient::TCellTag GetPrimaryCellTag() const = 0;
 
     virtual const NObjectClient::TCellTagList& GetSecondaryCellTags() const = 0;
+    virtual const NApi::NNative::TConnectionStaticConfigPtr& GetMasterCellConnectionConfigs() const = 0;
 
     virtual int GetCellCount() const = 0;
     virtual int GetSecondaryCellCount() const = 0;

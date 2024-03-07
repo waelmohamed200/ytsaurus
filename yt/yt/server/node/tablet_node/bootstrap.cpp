@@ -2,6 +2,8 @@
 
 #include "backing_store_cleaner.h"
 #include "compression_dictionary_builder.h"
+#include "compression_dictionary_manager.h"
+#include "error_manager.h"
 #include "hedging_manager_registry.h"
 #include "hint_manager.h"
 #include "hunk_chunk_sweeper.h"
@@ -25,7 +27,7 @@
 #include "tablet_snapshot_store.h"
 
 #include <yt/yt/server/node/cellar_node/bootstrap.h>
-#include <yt/yt/server/node/cellar_node/dynamic_bundle_config_manager.h>
+#include <yt/yt/server/node/cellar_node/bundle_dynamic_config_manager.h>
 #include <yt/yt/server/node/cellar_node/config.h>
 
 #include <yt/yt/server/node/data_node/bootstrap.h>
@@ -301,6 +303,10 @@ public:
         BackingStoreCleaner_ = CreateBackingStoreCleaner(this);
         LsmInterop_ = CreateLsmInterop(this, StoreCompactor_, PartitionBalancer_, StoreRotator_);
         CompressionDictionaryBuilder_ = CreateCompressionDictionaryBuilder(this);
+        ErrorManager_ = New<TErrorManager>(this);
+        CompressionDictionaryManager_ = CreateCompressionDictionaryManager(
+            GetConfig()->TabletNode->CompressionDictionaryCache,
+            this);
 
         InitializeOverloadController();
 
@@ -375,6 +381,7 @@ public:
         CompressionDictionaryBuilder_->Start();
         OverloadController_->Start();
         DiskChangeChecker_->Start();
+        ErrorManager_->Start();
     }
 
     NYTree::IYPathServicePtr CreateThreadPoolsOrchidService()
@@ -432,6 +439,11 @@ public:
     const TTableDynamicConfigManagerPtr& GetTableDynamicConfigManager() const override
     {
         return TableDynamicConfigManager_;
+    }
+
+    const TErrorManagerPtr& GetErrorManager() const override
+    {
+        return ErrorManager_;
     }
 
     const ISlotManagerPtr& GetSlotManager() const override
@@ -544,6 +556,11 @@ public:
         }
     }
 
+    const ICompressionDictionaryManagerPtr& GetCompressionDictionaryManager() const override
+    {
+        return CompressionDictionaryManager_;
+    }
+
 private:
     NClusterNode::IBootstrap* const ClusterNodeBootstrap_;
 
@@ -580,6 +597,8 @@ private:
     IBackingStoreCleanerPtr BackingStoreCleaner_;
     ILsmInteropPtr LsmInterop_;
     ICompressionDictionaryBuilderPtr CompressionDictionaryBuilder_;
+    TErrorManagerPtr ErrorManager_;
+    ICompressionDictionaryManagerPtr CompressionDictionaryManager_;
     TOverloadControllerPtr OverloadController_;
 
     NContainers::IDiskManagerProxyPtr DiskManagerProxy_;
@@ -612,7 +631,10 @@ private:
 
         StatisticsReporter_->Reconfigure(newConfig);
 
+        CompressionDictionaryManager_->OnDynamicConfigChanged(newConfig->TabletNode->CompressionDictionaryCache);
+
         DiskManagerProxy_->OnDynamicConfigChanged(newConfig->DiskManagerProxy);
+        ErrorManager_->Reconfigure(newConfig);
     }
 
     void OnBundleDynamicConfigChanged(

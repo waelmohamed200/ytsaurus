@@ -557,24 +557,13 @@ std::pair<TString, TSelectRowsOptions::TExpectedTableSchemas> TClient::PickInSyn
         chaosTableSchemas[0],
         bannedSyncReplicaIds[0]);
 
-    int joinOffset = 1;
-
-    if (query->WithIndex) {
-        patchTableDescriptor(
-            &*query->WithIndex,
-            candidates[joinOffset],
-            chaosTableSchemas[joinOffset],
-            bannedSyncReplicaIds[joinOffset]);
-        joinOffset++;
-    }
-
     for (size_t index = 0; index < query->Joins.size(); ++index) {
         if (auto* tableJoin = std::get_if<NAst::TJoin>(&query->Joins[index])) {
             patchTableDescriptor(
                 &tableJoin->Table,
-                candidates[index + joinOffset],
-                chaosTableSchemas[index + joinOffset],
-                bannedSyncReplicaIds[index + joinOffset]);
+                candidates[index + 1],
+                chaosTableSchemas[index + 1],
+                bannedSyncReplicaIds[index + 1]);
         }
     }
 
@@ -641,6 +630,10 @@ NApi::IClientPtr TClient::GetOrCreateReplicaClient(const TString& clusterName)
     }
 
     if (auto asyncClient = replicaClient->AsyncClient) {
+        if (asyncClient.IsSet() && !asyncClient.Get().IsOK()) {
+            replicaClient->AsyncClient = {};
+        }
+
         writerGuard.Release();
 
         return WaitFor(asyncClient)
@@ -648,18 +641,11 @@ NApi::IClientPtr TClient::GetOrCreateReplicaClient(const TString& clusterName)
     }
 
     auto asyncClient = BIND([this, replicaClient, clusterName, this_ = MakeStrong(this)] {
-        try {
-            auto connection = GetReplicaConnectionOrThrow(clusterName);
+        auto connection = GetReplicaConnectionOrThrow(clusterName);
 
-            auto guard = WriterGuard(replicaClient->Lock);
-            replicaClient->Client = connection->CreateNativeClient(Options_);
-            return replicaClient->Client;
-        } catch (const std::exception& ex) {
-            auto guard = WriterGuard(replicaClient->Lock);
-            replicaClient->AsyncClient = {};
-
-            throw;
-        }
+        auto guard = WriterGuard(replicaClient->Lock);
+        replicaClient->Client = connection->CreateNativeClient(Options_);
+        return replicaClient->Client;
     })
         .AsyncVia(Connection_->GetInvoker())
         .Run();

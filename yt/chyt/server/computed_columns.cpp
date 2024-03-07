@@ -5,6 +5,7 @@
 #include "format.h"
 #include "config.h"
 
+#include <yt/yt/library/codegen/execution_backend.h>
 #include <yt/yt/library/query/base/query_preparer.h>
 #include <yt/yt/client/table_client/logical_type.h>
 
@@ -149,7 +150,7 @@ struct TComputedColumnPopulationMatcher
         TLogger Logger;
     };
 
-    static bool needChildVisit(const DB::ASTPtr& node, const DB::ASTPtr& /* child */)
+    static bool needChildVisit(const DB::ASTPtr& node, const DB::ASTPtr& /*child*/)
     {
         return !node->as<DB::ASTSubquery>();
     }
@@ -205,7 +206,9 @@ struct TComputedColumnPopulationMatcher
                     entry.Expression,
                     data.TableSchema->Filter(entry.References),
                     nullptr,
-                    &variables)();
+                    &variables,
+                    /*useCanonicalNullRelations*/ false,
+                    /*executionBackend*/ NCodegen::EExecutionBackend::Native)();
 
                 auto instance = image.Instantiate();
 
@@ -216,6 +219,7 @@ struct TComputedColumnPopulationMatcher
                 instance.Run(
                     variables.GetLiteralValues(),
                     variables.GetOpaqueData(),
+                    variables.GetOpaqueDataSizes(),
                     &resultValue,
                     TRange<TUnversionedValue>(referenceValues.data(), referenceValues.size()),
                     rowBuffer);
@@ -310,7 +314,7 @@ struct TComputedColumnPopulationMatcher
         return inAst;
     }
 
-    static DB::ASTPtr PrepareDNFStatement(const TInclusionStatement& resultStatement, Data& /* data */)
+    static DB::ASTPtr PrepareDNFStatement(const TInclusionStatement& resultStatement, Data& /*data*/)
     {
         DB::ASTs conjuncts;
         for (const auto& tuple : resultStatement.PossibleTuples) {

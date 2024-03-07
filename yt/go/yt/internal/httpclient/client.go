@@ -15,6 +15,8 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/opentracing/opentracing-go"
+	"golang.org/x/xerrors"
+
 	"go.ytsaurus.tech/library/go/blockcodecs"
 	_ "go.ytsaurus.tech/library/go/blockcodecs/all"
 	"go.ytsaurus.tech/library/go/core/log"
@@ -23,7 +25,6 @@ import (
 	"go.ytsaurus.tech/yt/go/yt"
 	"go.ytsaurus.tech/yt/go/yt/internal"
 	"go.ytsaurus.tech/yt/go/yterrors"
-	"golang.org/x/xerrors"
 )
 
 func decodeYTErrorFromHeaders(h http.Header) (ytErr *yterrors.Error, err error) {
@@ -660,6 +661,12 @@ func NewHTTPClient(c *yt.Config) (yt.Client, error) {
 	certPool, err := internal.NewCertPool()
 	if err != nil {
 		return nil, err
+	}
+
+	if len(c.CertificateAuthorityData) > 0 {
+		if ok := certPool.AppendCertsFromPEM(c.CertificateAuthorityData); !ok {
+			return nil, errors.New("invalid PEM encoded certificate")
+		}
 	}
 
 	client.config = c

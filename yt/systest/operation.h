@@ -14,7 +14,7 @@ namespace NYT::NTest {
 
 struct TCallState
 {
-    std::optional<std::mt19937> RandomEngine;
+    std::optional<std::mt19937_64> RandomEngine;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -66,7 +66,9 @@ class IReducer : public IOperation
 public:
     explicit IReducer(const TTable& table);
 
-    virtual std::vector<std::vector<TNode>> Run(TCallState* state, TRange<TRange<TNode>> input) const = 0;
+    virtual void StartRange(TCallState* state, TRange<TNode> key) = 0;
+    virtual void ProcessRow(TCallState* state, TRange<TNode> input) = 0;
+    virtual std::vector<std::vector<TNode>> FinishRange(TCallState* state) = 0;
     virtual void ToProto(NProto::TReducer* proto) const = 0;
 };
 

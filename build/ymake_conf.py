@@ -21,6 +21,32 @@ import six
 logger = logging.getLogger(__name__ if __name__ != '__main__' else 'ymake_conf.py')
 
 
+class WindowsVersion(object):
+    """
+    Predefined values for _WIN32_WINNT macro.
+    This macro specifies minimal Windows version required by the binary being build.
+
+    A complete list of the values supported by the Windows SDK can be found at
+    https://docs.microsoft.com/en-us/cpp/porting/modifying-winver-and-win32-winnt
+    """
+    Windows07 = '0x0601'
+    Windows08 = '0x0602'
+    Windows10 = '0x0A00'
+
+
+# This is default Android API level unless `-DANDROID_API` is specified in cmdline
+# Android api level can be resolved to Android version using
+# https://android.googlesource.com/platform/bionic/+/master/docs/status.md
+ANDROID_API_DEFAULT = 21
+
+# This is default Linux SDK unless `-DOS_SDK` is specified in cmdline
+LINUX_SDK_DEFAULT = "ubuntu-14"
+
+MACOS_VERSION_MIN = "11.0"
+IOS_VERSION_MIN = "13.0"
+WINDOWS_VERSION_MIN = WindowsVersion.Windows07
+
+
 def init_logger(verbose):
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
 
@@ -70,6 +96,7 @@ class Platform(object):
         self.is_arm = self.is_armv7 or self.is_armv8 or self.is_armv8m or self.is_armv7em
         self.is_armv7_neon = self.arch in ('armv7a_neon', 'armv7ahf', 'armv7a_cortex_a9', 'armv7ahf_cortex_a35', 'armv7ahf_cortex_a53')
         self.is_armv7hf = self.arch in ('armv7ahf', 'armv7ahf_cortex_a35', 'armv7ahf_cortex_a53')
+        self.is_armv5te = self.arch in ('armv5te_arm968e_s')
 
         self.is_rv32imc = self.arch in ('riscv32_esp',)
         self.is_riscv32 = self.is_rv32imc
@@ -93,6 +120,7 @@ class Platform(object):
         self.is_cortex_m23 = self.arch in ('armv8m_cortex_m23',)
         self.is_cortex_m4 = self.arch in ('armv7em_cortex_m4',)
         self.is_cortex_m7 = self.arch in ('armv7em_cortex_m7')
+        self.is_arm968e_s = self.arch in ('armv5te_arm968e_s')
 
         self.is_power8le = self.arch == 'ppc64le'
         self.is_power9le = self.arch == 'power9le'
@@ -101,7 +129,7 @@ class Platform(object):
         self.is_wasm64 = self.arch == 'wasm64'
         self.is_wasm = self.is_wasm64
 
-        self.is_32_bit = self.is_x86 or self.is_armv7 or self.is_armv8m or self.is_riscv32 or self.is_nds32 or self.is_armv7em or self.is_xtensa or self.is_tc32
+        self.is_32_bit = self.is_x86 or self.is_armv5te or self.is_armv7 or self.is_armv8m or self.is_riscv32 or self.is_nds32 or self.is_armv7em or self.is_xtensa or self.is_tc32
         self.is_64_bit = self.is_x86_64 or self.is_armv8 or self.is_powerpc or self.is_wasm64
 
         assert self.is_32_bit or self.is_64_bit
@@ -127,9 +155,7 @@ class Platform(object):
 
         self.is_android = self.os == 'android'
         if self.is_android:
-            # This is default Android API level unless `-DANDROID_API` is specified in cmdline
-            default_android_api = 21
-            self.android_api = int(preset('ANDROID_API', default_android_api))
+            self.android_api = int(preset('ANDROID_API', ANDROID_API_DEFAULT))
 
         self.is_cygwin = self.os == 'cygwin'
         self.is_yocto = self.os == 'yocto'
@@ -176,6 +202,7 @@ class Platform(object):
             (self.is_armv8, 'ARCH_ARM64'),
             (self.is_armv8m, 'ARCH_ARM8M'),
             (self.is_armv7em, 'ARCH_ARM7EM'),
+            (self.is_armv5te, 'ARCH_ARM5TE'),
             (self.is_arm, 'ARCH_ARM'),
             (self.is_linux_armv8 or self.is_macos_arm64, 'ARCH_AARCH64'),
             (self.is_powerpc, 'ARCH_PPC64LE'),
@@ -904,16 +931,16 @@ class CompilerDetector(object):
         gcc_version = version(gcc_vars)
         msvc_version = version(msvc_vars)
 
-        if clang_version:
+        if msvc_version:
+            logger.debug('Detected MSVC version %s', msvc_version)
+            self.type = 'msvc'
+        elif clang_version:
             logger.debug('Detected Clang version %s', clang_version)
             self.type = 'clang'
         elif gcc_version:
             logger.debug('Detected GCC version %s', gcc_version)
             # TODO(somov): Переименовать в gcc.
             self.type = 'gnu'
-        elif msvc_version:
-            logger.debug('Detected MSVC version %s', msvc_version)
-            self.type = 'msvc'
         else:
             raise ConfigureError('Could not determine custom compiler type: {}'.format(c_compiler))
 
@@ -1052,6 +1079,9 @@ class GnuToolchainOptions(ToolchainOptions):
         if build.host.is_apple and build.target.is_apple and to_bool(preset('APPLE_SDK_LOCAL'), default=False):
             self.os_sdk_local = True
 
+        if build.host.is_apple and build.target.is_ios and to_bool(preset('MAPSMOBI_BUILD_TARGET'), default=False):
+            self.os_sdk_local = True
+
         if self.os_sdk == 'local':
             self.os_sdk_local = True
 
@@ -1067,7 +1097,7 @@ class GnuToolchainOptions(ToolchainOptions):
                 return 'ubuntu-18'
 
             # Default OS SDK for Linux builds
-            return 'ubuntu-14'
+            return LINUX_SDK_DEFAULT
 
 
 class Toolchain(object):
@@ -1149,13 +1179,10 @@ class GnuToolchain(Toolchain):
             for lib_path in build.host.library_path_variables:
                 self.env.setdefault(lib_path, []).append('{}/lib'.format(self.tc.name_marker))
 
-        macos_version_min = '11.0'
-        ios_version_min = '13.0'
-
         swift_target = select(default=None, selectors=[
-            (target.is_iossim and target.is_x86_64, 'x86_64-apple-ios{}-simulator'.format(ios_version_min)),
-            (target.is_iossim and target.is_x86, 'i386-apple-ios{}-simulator'.format(ios_version_min)),
-            (target.is_iossim and target.is_armv8, 'arm64-apple-ios{}-simulator'.format(ios_version_min)),
+            (target.is_iossim and target.is_x86_64, 'x86_64-apple-ios{}-simulator'.format(IOS_VERSION_MIN)),
+            (target.is_iossim and target.is_x86, 'i386-apple-ios{}-simulator'.format(IOS_VERSION_MIN)),
+            (target.is_iossim and target.is_armv8, 'arm64-apple-ios{}-simulator'.format(IOS_VERSION_MIN)),
             (not target.is_iossim and target.is_ios and target.is_armv8, 'arm64-apple-ios9'),
             (not target.is_iossim and target.is_ios and target.is_armv7, 'armv7-apple-ios9'),
         ])
@@ -1178,11 +1205,11 @@ class GnuToolchain(Toolchain):
                     (target.is_linux and target.is_armv7 and target.armv7_float_abi == 'softfp', 'armv7-linux-gnueabi'),
                     (target.is_linux and target.is_powerpc, 'powerpc64le-linux-gnu'),
 
-                    (target.is_iossim and target.is_x86_64, 'x86_64-apple-ios{}-simulator'.format(ios_version_min)),
-                    (target.is_iossim and target.is_x86, 'i386-apple-ios{}-simulator'.format(ios_version_min)),
-                    (target.is_iossim and target.is_armv8, 'arm64-apple-ios{}-simulator'.format(ios_version_min)),
-                    (not target.is_iossim and target.is_ios and target.is_armv8, 'arm64-apple-ios{}'.format(ios_version_min)),
-                    (not target.is_iossim and target.is_ios and target.is_armv7, 'armv7-apple-ios{}'.format(ios_version_min)),
+                    (target.is_iossim and target.is_x86_64, 'x86_64-apple-ios{}-simulator'.format(IOS_VERSION_MIN)),
+                    (target.is_iossim and target.is_x86, 'i386-apple-ios{}-simulator'.format(IOS_VERSION_MIN)),
+                    (target.is_iossim and target.is_armv8, 'arm64-apple-ios{}-simulator'.format(IOS_VERSION_MIN)),
+                    (not target.is_iossim and target.is_ios and target.is_armv8, 'arm64-apple-ios{}'.format(IOS_VERSION_MIN)),
+                    (not target.is_iossim and target.is_ios and target.is_armv7, 'armv7-apple-ios{}'.format(IOS_VERSION_MIN)),
 
                     (target.is_apple and target.is_x86, 'i386-apple-darwin14'),
                     (target.is_apple and target.is_x86_64, 'x86_64-apple-darwin14'),
@@ -1239,7 +1266,10 @@ class GnuToolchain(Toolchain):
         elif target.is_armv7_neon:
             self.c_flags_platform.append('-mfpu=neon')
 
-        if (target.is_armv7 or target.is_armv8m or target.is_armv7em) and build.is_size_optimized:
+        elif target.is_arm968e_s:
+            self.c_flags_platform.append('-march=armv5te -mcpu=arm968e-s -mthumb-interwork -mlittle-endian')
+
+        if (target.is_armv7 or target.is_armv8m or target.is_armv7em or target.is_armv5te) and build.is_size_optimized:
             # Enable ARM Thumb2 variable-length instruction encoding
             # to reduce code size
             self.c_flags_platform.append('-mthumb')
@@ -1257,9 +1287,9 @@ class GnuToolchain(Toolchain):
                 (target.is_linux and target.is_power8le, ['-mcpu=power8', '-mtune=power8', '-maltivec']),
                 (target.is_linux and target.is_power9le, ['-mcpu=power9', '-mtune=power9', '-maltivec']),
                 (target.is_linux and target.is_armv8, ['-march=armv8a']),
-                (target.is_macos, ['-mmacosx-version-min={}'.format(macos_version_min)]),
-                (target.is_ios and not target.is_iossim, ['-mios-version-min={}'.format(ios_version_min)]),
-                (target.is_iossim, ['-mios-simulator-version-min={}'.format(ios_version_min)]),
+                (target.is_macos, ['-mmacosx-version-min={}'.format(MACOS_VERSION_MIN)]),
+                (target.is_ios and not target.is_iossim, ['-mios-version-min={}'.format(IOS_VERSION_MIN)]),
+                (target.is_iossim, ['-mios-simulator-version-min={}'.format(IOS_VERSION_MIN)]),
                 (target.is_android and target.is_armv7, ['-march=armv7-a', '-mfloat-abi=softfp']),
                 (target.is_android and target.is_armv8, ['-march=armv8-a']),
                 (target.is_yocto and target.is_armv7, ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard', '-mcpu=cortex-a9', '-O1'])
@@ -1465,6 +1495,12 @@ class GnuCompiler(Compiler):
             self.c_flags.append('-m32')
         if self.target.is_x86_64:
             self.c_flags.append('-m64')
+
+        if self.target.is_wasm64:
+            # WebAssembly-specific exception handling flags
+            self.c_foptions += [
+                '-fwasm-exceptions',
+            ]
 
         self.debug_info_flags = ['-g']
         if self.target.is_linux:
@@ -1832,18 +1868,6 @@ class MSVCToolchainOptions(ToolchainOptions):
 
 
 class MSVC(object):
-    # noinspection PyPep8Naming
-    class WindowsVersion(object):
-        """
-        Predefined values for _WIN32_WINNT macro.
-        This macro specifies minimal Windows version required by the binary being build.
-
-        A complete list of the values supported by the Windows SDK can be found at
-        https://docs.microsoft.com/en-us/cpp/porting/modifying-winver-and-win32-winnt
-        """
-        Windows7 = '0x0601'
-        Windows8 = '0x0602'
-
     def __init__(self, tc, build):
         """
         :type tc: MSVCToolchainOptions
@@ -2002,10 +2026,12 @@ class MSVCCompiler(MSVC, Compiler):
         cxx_warnings = []
 
         if self.tc.use_clang:
+            if not self.tc.is_system_cxx:
+                flags += [
+                    # Allow <windows.h> to be included via <Windows.h> in case-sensitive file-systems.
+                    '-fcase-insensitive-paths',
+                ]
             flags += [
-                # Allow <windows.h> to be included via <Windows.h> in case-sensitive file-systems.
-                '-fcase-insensitive-paths',
-
                 # At the time clang-cl identifies itself as MSVC 19.11:
                 # (actual value can be found in clang/lib/Driver/ToolChains/MSVC.cpp, the syntax would be like
                 # ```
@@ -2046,8 +2072,7 @@ class MSVCCompiler(MSVC, Compiler):
                     '-Wno-unused-command-line-argument',
                 ]
 
-        win_version_min = self.WindowsVersion.Windows7
-        defines.append('/D_WIN32_WINNT={0}'.format(win_version_min))
+        defines.append('/D_WIN32_WINNT={0}'.format(WINDOWS_VERSION_MIN))
 
         if winapi_unicode:
             defines += ['/DUNICODE', '/D_UNICODE']
@@ -2174,6 +2199,8 @@ class Python(object):
         self.tc = tc
 
     def configure_posix(self, python=None, python_config=None):
+        self.check_configuration()
+
         python = python or preset('PYTHON_BIN') or which('python')
         python_config = python_config or preset('PYTHON_CONFIG') or which('python-config')
 
@@ -2194,8 +2221,21 @@ class Python(object):
         # They are not used separately and get overriden together, so it is safe.
         # TODO(somov): Удалить эту переменную и PYTHON_LIBRARIES из makelist-ов.
         self.libraries = ''
-        if preset('USE_ARCADIA_PYTHON') == 'no' and not preset('USE_SYSTEM_PYTHON') and not self.tc.os_sdk_local:
-            raise Exception("Use fixed python (see https://clubs.at.yandex-team.ru/arcadia/15392) or set OS_SDK=local flag")
+
+    def check_configuration(self):
+        if preset('USE_ARCADIA_PYTHON') == 'no':
+
+            # Set USE_LOCAL_PYTHON to enable configuration
+            # when we still using fixed OS SDK,
+            # but at the same time using Python from the local system.
+            #
+            # This configuration is not guaranteed to work,
+            # for example, if local and fixed OS SDKs differ much.
+            if preset('USE_LOCAL_PYTHON') == 'yes':
+                return
+
+            if not preset('USE_SYSTEM_PYTHON') and not self.tc.os_sdk_local:
+                raise Exception("Use fixed python (see https://clubs.at.yandex-team.ru/arcadia/15392) or set OS_SDK=local flag")
 
     def print_variables(self):
         variables = Variables({
@@ -2283,6 +2323,8 @@ class Cuda(object):
             "--expt-extended-lambda",
             # Allow host code to invoke __device__ constexpr functions and vice versa
             "--expt-relaxed-constexpr",
+            # Allow to use newer compilers than CUDA Toolkit officially supports
+            "--allow-unsupported-compiler",
         ]
 
         if not self.have_cuda.value:
@@ -2355,10 +2397,10 @@ class Cuda(object):
             if not self.cuda_version.from_user:
                 return False
 
-        if self.cuda_version.value in ('8.0', '9.0', '9.1', '9.2', '10.0'):
-            raise ConfigureError('CUDA versions 8.x, 9.x and 10.0 are no longer supported.\nSee DEVTOOLS-7108.')
+        if self.cuda_version.value in ('8.0', '9.0', '9.1', '9.2', '10.0', '10.1'):
+            raise ConfigureError('CUDA versions 8.x, 9.x and 10.x are no longer supported.\nSee DEVTOOLS-7108 and DTCC-2118.')
 
-        if self.cuda_version.value in ('10.1', '11.0', '11.1', '11.3', '11.4', '11.8', '12.1'):
+        if self.cuda_version.value in ('11.0', '11.1', '11.3', '11.4', '11.8', '12.1'):
             return True
 
         return False

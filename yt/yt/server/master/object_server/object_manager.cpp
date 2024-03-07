@@ -313,6 +313,9 @@ private:
     // COMPAT(h0pless): FixTransactionACLs
     bool ResetTransactionAcls_ = false;
 
+    // COMPAT(babenko)
+    bool DropLegacyClusterNodeMap_ = false;
+
     DECLARE_THREAD_AFFINITY_SLOT(AutomatonThread);
 
     void SaveKeys(NCellMaster::TSaveContext& context) const;
@@ -451,7 +454,7 @@ public:
                     // committing a boomerang mutation right now, and
                     // replies to those are passed via the response keeper.
                     if (auto setResponseKeeperPromise =
-                        responseKeeper->EndRequest(mutationId, NRpc::CreateErrorResponseMessage(error), /* remember */ false))
+                        responseKeeper->EndRequest(mutationId, NRpc::CreateErrorResponseMessage(error), /*remember*/ false))
                     {
                         setResponseKeeperPromise();
                     }
@@ -1051,6 +1054,7 @@ void TObjectManager::LoadValues(NCellMaster::TLoadContext& context)
     GarbageCollector_->LoadValues(context);
 
     ResetTransactionAcls_ = context.GetVersion() < EMasterReign::FixTransactionACLs;
+    DropLegacyClusterNodeMap_ = context.GetVersion() < EMasterReign::DropLegacyClusterNodeMap;
 }
 
 void TObjectManager::OnAfterSnapshotLoaded()
@@ -1091,6 +1095,12 @@ void TObjectManager::OnAfterSnapshotLoaded()
                 EPermission::Create));
         }
     }
+
+    if (DropLegacyClusterNodeMap_) {
+        auto primaryCellTag = Bootstrap_->GetMulticellManager()->GetPrimaryCellTag();
+        auto id = MakeSchemaObjectId(EObjectType(804), primaryCellTag);
+        SchemaMap_.Remove(id);
+    }
 }
 
 void TObjectManager::Clear()
@@ -1112,6 +1122,7 @@ void TObjectManager::Clear()
     DestroyedObjects_ = 0;
 
     ResetTransactionAcls_ = false;
+    DropLegacyClusterNodeMap_ = false;
 
     GarbageCollector_->Clear();
     MutationIdempotizer_->Clear();
@@ -1527,7 +1538,7 @@ TObject* TObjectManager::CreateObject(
     switch (object->GetLifeStage()) {
         case EObjectLifeStage::RemovalPreCommitted:
             object->SetLifeStage(EObjectLifeStage::RemovalStarted);
-            /* fallthrough */
+            /*fallthrough*/
 
         case EObjectLifeStage::RemovalStarted:
             CheckRemovingObjectRefCounter(object);

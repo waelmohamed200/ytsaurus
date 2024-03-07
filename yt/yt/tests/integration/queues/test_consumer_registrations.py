@@ -480,6 +480,37 @@ class TestConsumerRegistrations(TestQueueConsumerApiBase):
             []
         ))
 
+        # tests for paths with attributes
+        wait(lambda: self.listed_registrations_are_equal(
+            list_queue_consumer_registrations(queue_path="<append=true>//tmp/q1[#10:#100]", consumer_path="<append=true>//tmp/c1[#20:#200]"),
+            [
+                ("primary", "//tmp/q1", "primary", "//tmp/c1", True),
+            ]
+        ))
+
+        wait(lambda: self.listed_registrations_are_equal(
+            list_queue_consumer_registrations(queue_path="<append=true>//tmp/q1[#10:#100]"),
+            [
+                ("primary", "//tmp/q1", "primary", "//tmp/c1", True),
+                ("primary", "//tmp/q1", "primary", "//tmp/c2", False),
+            ]
+        ))
+
+        wait(lambda: self.listed_registrations_are_equal(
+            list_queue_consumer_registrations(consumer_path="<append=true>//tmp/c1[#20:#200]"),
+            [
+                ("primary", "//tmp/q1", "primary", "//tmp/c1", True),
+                ("primary", "//tmp/q2", "primary", "//tmp/c1", True, (1, 5, 4, 3)),
+            ]
+        ))
+
+        wait(lambda: self.listed_registrations_are_equal(
+            list_queue_consumer_registrations(consumer_path="<append=true>primary://tmp/c2[#20:#200]"),
+            [
+                ("primary", "//tmp/q1", "primary", "//tmp/c2", False),
+            ]
+        ))
+
         unregister_queue_consumer("//tmp/q1", "//tmp/c1")
         unregister_queue_consumer("//tmp/q1", "//tmp/c2")
         unregister_queue_consumer("//tmp/q2", "//tmp/c1")
@@ -722,6 +753,27 @@ class TestConsumerRegistrations(TestQueueConsumerApiBase):
 
             remove(f"{queue}-link")
             remove(f"{consumer}-link")
+
+    @authors("nadya02")
+    @pytest.mark.parametrize("create_registration_table", [
+        TestQueueConsumerApiBase._create_simple_registration_table,
+    ])
+    def test_normalize_cluster(self, create_registration_table):
+        config = create_registration_table(self)
+        self._apply_registration_table_config(config)
+
+        attrs = {"dynamic": True, "schema": [{"name": "a", "type": "string"}]}
+        create("table", "//tmp/q1", attributes=attrs)
+        create("table", "//tmp/c1", attributes=attrs)
+
+        register_queue_consumer("<cluster=cluster.yt.yandex.net>//tmp/q1",  "<cluster=cluster.yt.yandex.net>//tmp/c1", vital=True)
+
+        wait(lambda: self.listed_registrations_are_equal(
+            list_queue_consumer_registrations(),
+            [
+                ("cluster", "//tmp/q1", "cluster", "//tmp/c1", True),
+            ]
+        ))
 
     @authors("cherepashka")
     @pytest.mark.parametrize("create_registration_table", [

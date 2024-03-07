@@ -11,7 +11,9 @@
 #include <yt/yt/server/lib/tablet_node/config.h>
 
 #include <yt/yt/server/node/tablet_node/bootstrap.h>
+#include <yt/yt/server/node/tablet_node/error_manager.h>
 #include <yt/yt/server/node/tablet_node/security_manager.h>
+#include <yt/yt/server/node/tablet_node/slot_manager.h>
 #include <yt/yt/server/node/tablet_node/tablet.h>
 #include <yt/yt/server/node/tablet_node/tablet_manager.h>
 #include <yt/yt/server/node/tablet_node/tablet_reader.h>
@@ -555,6 +557,7 @@ private:
             ->CreateNativeClient(clientOptions);
 
         auto remoteExecutor = CreateQueryExecutor(
+            MemoryChunkProvider_,
             client->GetNativeConnection(),
             Invoker_,
             ColumnEvaluatorCache_,
@@ -593,6 +596,7 @@ private:
                 ] (const TQueryPtr& subquery, const TConstJoinClausePtr& joinClause) -> TJoinSubqueryEvaluator {
                     auto remoteOptions = QueryOptions_;
                     remoteOptions.MaxSubqueries = 1;
+                    remoteOptions.MergeVersionedRows = true;
 
                     size_t minKeyWidth = std::numeric_limits<size_t>::max();
                     for (const auto& split : dataSplits) {
@@ -1019,7 +1023,12 @@ private:
                     }
 
                     const auto& group = groupedSplit[index++];
-                    return GetMultipleRangesReader(group.ObjectId, group.Ranges);
+
+                    try {
+                        return GetMultipleRangesReader(group.ObjectId, group.Ranges);
+                    } catch (const std::exception& ex) {
+                        THROW_ERROR EnrichErrorForErrorManager(TError(ex), TabletSnapshots_.GetCachedTabletSnapshot(group.ObjectId));
+                    }
                 };
 
                 return CreatePrefetchingOrderedSchemafulReader(std::move(bottomSplitReaderGenerator));
@@ -1060,7 +1069,11 @@ private:
                 }
             });
             subreaderCreators.push_back([=, this, keys = std::move(keys)] {
-                return GetTabletReader(tabletId, keys);
+                try {
+                    return GetTabletReader(tabletId, keys);
+                } catch (const std::exception& ex) {
+                    THROW_ERROR EnrichErrorForErrorManager(TError(ex), TabletSnapshots_.GetCachedTabletSnapshot(tabletId));
+                }
             });
         };
 

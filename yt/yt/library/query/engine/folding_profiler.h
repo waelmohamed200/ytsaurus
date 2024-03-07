@@ -2,6 +2,8 @@
 
 #include "llvm_folding_set.h"
 
+#include <yt/yt/library/codegen/execution_backend.h>
+
 #include <yt/yt/library/query/engine_api/evaluation_helpers.h>
 
 #include <util/generic/hash_set.h>
@@ -26,6 +28,7 @@ TCGExpressionGenerator Profile(
     llvm::FoldingSetNodeID* id,
     TCGVariables* variables,
     bool useCanonicalNullRelations = false,
+    NCodegen::EExecutionBackend executionBackend = NCodegen::EExecutionBackend::Native,
     const TConstFunctionProfilerMapPtr& functionProfilers = GetBuiltinFunctionProfilers().Get());
 
 TCGQueryGenerator Profile(
@@ -34,6 +37,7 @@ TCGQueryGenerator Profile(
     TCGVariables* variables,
     TJoinSubqueryProfiler joinProfiler,
     bool useCanonicalNullRelations = false,
+    NCodegen::EExecutionBackend executionBackend = NCodegen::EExecutionBackend::Native,
     const TConstFunctionProfilerMapPtr& functionProfilers = GetBuiltinFunctionProfilers().Get(),
     const TConstAggregateProfilerMapPtr& aggregateProfilers = GetBuiltinAggregateProfilers().Get());
 

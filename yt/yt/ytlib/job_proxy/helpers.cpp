@@ -104,12 +104,12 @@ IPartitionerPtr CreatePartitioner(const TPartitionJobSpecExt& partitionJobSpecEx
         std::vector<TOwningKeyBound> partitionLowerBounds;
         partitionLowerBounds.reserve(keys.size() + 1);
 
-        partitionLowerBounds.push_back(TOwningKeyBound::MakeUniversal(/* isUpper */ false));
+        partitionLowerBounds.push_back(TOwningKeyBound::MakeUniversal(/*isUpper*/ false));
 
         for (int index = 0; index < std::ssize(keys); ++index) {
             TUnversionedOwningRow owningKey(keys[index]);
             bool isInclusive = partitionJobSpecExt.partition_lower_bound_inclusivenesses(index);
-            partitionLowerBounds.push_back(TOwningKeyBound::FromRow(owningKey, /* isInclusive */ isInclusive, /* isUpper */ false));
+            partitionLowerBounds.push_back(TOwningKeyBound::FromRow(owningKey, /*isInclusive*/ isInclusive, /*isUpper*/ false));
         }
 
         auto comparator = GetComparator(FromProto<TSortColumns>(partitionJobSpecExt.sort_columns()));
@@ -137,6 +137,18 @@ IPartitionerPtr CreatePartitioner(const TPartitionJobSpecExt& partitionJobSpecEx
             partitionJobSpecExt.reduce_key_column_count(),
             partitionJobSpecExt.partition_task_level());
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+constexpr int JobFirstOutputTableFdDefault = 1;
+constexpr int JobFirstOutputTableFdWithRedirectStdoutToStderr = 4;
+
+int GetJobFirstOutputTableFdFromSpec(const TUserJobSpec& spec)
+{
+    return spec.redirect_stdout_to_stderr()
+        ? JobFirstOutputTableFdWithRedirectStdoutToStderr
+        : JobFirstOutputTableFdDefault;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

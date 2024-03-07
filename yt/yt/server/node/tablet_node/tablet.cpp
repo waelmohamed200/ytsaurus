@@ -1,6 +1,7 @@
 #include "tablet.h"
 
 #include "automaton.h"
+#include "compression_dictionary_manager.h"
 #include "distributed_throttler_manager.h"
 #include "partition.h"
 #include "sorted_chunk_store.h"
@@ -14,6 +15,9 @@
 #include "hunk_chunk.h"
 #include "hunk_lock_manager.h"
 #include "hedging_manager_registry.h"
+
+#include <yt/yt/server/node/cluster_node/config.h>
+#include <yt/yt/server/node/cluster_node/dynamic_config_manager.h>
 
 #include <yt/yt/server/lib/misc/profiling_helpers.h>
 
@@ -1032,7 +1036,7 @@ void TTablet::Load(TLoadContext& context)
         Load(context, CompressionDictionaryInfos_);
         for (auto policy : TEnumTraits<EDictionaryCompressionPolicy>::GetDomainValues()) {
             auto chunkId = CompressionDictionaryInfos_[policy].ChunkId;
-            if (chunkId == NullChunkId) {
+            if (!chunkId) {
                 continue;
             }
             auto dictionaryHunkChunk = GetHunkChunk(chunkId);
@@ -1236,7 +1240,7 @@ void TTablet::OnAfterSnapshotLoaded()
 
     for (auto& dictionaryInfo : CompressionDictionaryInfos_) {
         auto chunkId = dictionaryInfo.ChunkId;
-        if (chunkId == NullChunkId) {
+        if (!chunkId) {
             continue;
         }
         auto dictionaryHunkChunk = GetHunkChunk(chunkId);
@@ -1625,22 +1629,24 @@ THunkChunkPtr TTablet::GetHunkChunkOrThrow(TChunkId id)
 
 void TTablet::AttachCompressionDictionary(
     NTableClient::EDictionaryCompressionPolicy policy,
-    NChunkClient::TChunkId id)
+    NChunkClient::TChunkId chunkId)
 {
     auto oldDictionaryId = CompressionDictionaryInfos_[policy].ChunkId;
-    CompressionDictionaryInfos_[policy].ChunkId = id;
+    CompressionDictionaryInfos_[policy].ChunkId = chunkId;
 
-    if (oldDictionaryId != NullChunkId) {
+    if (oldDictionaryId) {
         auto oldDictionaryHunkChunk = GetHunkChunk(oldDictionaryId);
         YT_VERIFY(oldDictionaryHunkChunk->GetAttachedCompressionDictionary());
         oldDictionaryHunkChunk->SetAttachedCompressionDictionary(false);
         UpdateDanglingHunkChunks(oldDictionaryHunkChunk);
     }
 
-    auto dictionaryHunkChunk = GetHunkChunk(id);
-    YT_VERIFY(!dictionaryHunkChunk->GetAttachedCompressionDictionary());
-    dictionaryHunkChunk->SetAttachedCompressionDictionary(true);
-    UpdateDanglingHunkChunks(dictionaryHunkChunk);
+    if (chunkId) {
+        auto dictionaryHunkChunk = GetHunkChunk(chunkId);
+        YT_VERIFY(!dictionaryHunkChunk->GetAttachedCompressionDictionary());
+        dictionaryHunkChunk->SetAttachedCompressionDictionary(true);
+        UpdateDanglingHunkChunks(dictionaryHunkChunk);
+    }
 }
 
 void TTablet::UpdatePreparedStoreRefCount(const THunkChunkPtr& hunkChunk, int delta)
@@ -1848,6 +1854,8 @@ TTabletSnapshotPtr TTablet::BuildSnapshot(
         snapshot->CellId = slot->GetCellId();
         snapshot->HydraManager = slot->GetHydraManager();
         snapshot->TabletCellRuntimeData = slot->GetRuntimeData();
+        snapshot->DictionaryCompressionFactory = slot->GetCompressionDictionaryManager()
+            ->CreateTabletDictionaryCompressionFactory(snapshot);
     }
 
     snapshot->TabletId = Id_;
@@ -1966,6 +1974,8 @@ TTabletSnapshotPtr TTablet::BuildSnapshot(
 
     snapshot->ChunkFragmentReader = GetChunkFragmentReader();
 
+    snapshot->TabletCellBundle = Context_->GetTabletCellBundleName();
+
     return snapshot;
 }
 
@@ -2063,16 +2073,16 @@ void TTablet::ReconfigureCompressionDictionaries()
 {
     if (Settings_.MountConfig->ValueDictionaryCompression->Enable) {
         for (auto policy : TEnumTraits<EDictionaryCompressionPolicy>::GetDomainValues()) {
-            if (CompressionDictionaryInfos_[policy].ChunkId != NullChunkId &&
+            if (CompressionDictionaryInfos_[policy].ChunkId &&
                 !Settings_.MountConfig->ValueDictionaryCompression->AppliedPolicies.contains(policy))
             {
-                CompressionDictionaryInfos_[policy].ChunkId = NullChunkId;
+                AttachCompressionDictionary(policy, NullChunkId);
                 CompressionDictionaryInfos_[policy].RebuildBackoffTime = TInstant::Zero();
             }
         }
     } else {
         for (auto policy : TEnumTraits<EDictionaryCompressionPolicy>::GetDomainValues()) {
-            CompressionDictionaryInfos_[policy].ChunkId = NullChunkId;
+            AttachCompressionDictionary(policy, NullChunkId);
             CompressionDictionaryInfos_[policy].RebuildBackoffTime = TInstant::Zero();
         }
     }
@@ -2127,7 +2137,7 @@ void TTablet::ReconfigureDistributedThrottlers(const ITabletSlotPtr& slot)
             "tablet_stores_update",
             EDistributedThrottlerMode::Precise,
             TabletStoresUpdateThrottlerRpcTimeout,
-            /* admitUnlimitedThrottler */ true);
+            /*admitUnlimitedThrottler*/ true);
 
     DistributedThrottlers_[ETabletDistributedThrottlerKind::Lookup] =
         throttlerManager->GetOrCreateThrottler(
@@ -2137,7 +2147,7 @@ void TTablet::ReconfigureDistributedThrottlers(const ITabletSlotPtr& slot)
             "lookup",
             EDistributedThrottlerMode::Adaptive,
             LookupThrottlerRpcTimeout,
-            /* admitUnlimitedThrottler */ false);
+            /*admitUnlimitedThrottler*/ false);
     YT_VERIFY(
         Settings_.MountConfig->Throttlers.contains("lookup") ||
         !DistributedThrottlers_[ETabletDistributedThrottlerKind::Lookup]);
@@ -2150,7 +2160,7 @@ void TTablet::ReconfigureDistributedThrottlers(const ITabletSlotPtr& slot)
             "select",
             EDistributedThrottlerMode::Adaptive,
             SelectThrottlerRpcTimeout,
-            /* admitUnlimitedThrottler */ false);
+            /*admitUnlimitedThrottler*/ false);
 
     DistributedThrottlers_[ETabletDistributedThrottlerKind::CompactionRead] =
         throttlerManager->GetOrCreateThrottler(
@@ -2160,7 +2170,7 @@ void TTablet::ReconfigureDistributedThrottlers(const ITabletSlotPtr& slot)
             "compaction_read",
             EDistributedThrottlerMode::Adaptive,
             CompactionReadThrottlerRpcTimeout,
-            /* admitUnlimitedThrottler */ false);
+            /*admitUnlimitedThrottler*/ false);
 
     DistributedThrottlers_[ETabletDistributedThrottlerKind::Write] =
         throttlerManager->GetOrCreateThrottler(
@@ -2170,12 +2180,15 @@ void TTablet::ReconfigureDistributedThrottlers(const ITabletSlotPtr& slot)
             "write",
             EDistributedThrottlerMode::Adaptive,
             WriteThrottlerRpcTimeout,
-            /* admitUnlimitedThrottler */ false);
+            /*admitUnlimitedThrottler*/ false);
 
     DistributedThrottlers_[ETabletDistributedThrottlerKind::ChangelogMediumWrite] =
         slot->GetChangelogMediumWriteThrottler();
+    DistributedThrottlers_[ETabletDistributedThrottlerKind::BlobMediumWrite] =
+        slot->GetMediumWriteThrottler(Settings_.StoreWriterOptions->MediumName);
 
     YT_VERIFY(DistributedThrottlers_[ETabletDistributedThrottlerKind::ChangelogMediumWrite]);
+    YT_VERIFY(DistributedThrottlers_[ETabletDistributedThrottlerKind::BlobMediumWrite]);
 }
 
 void TTablet::ReconfigureChunkFragmentReader(const ITabletSlotPtr& slot)
@@ -2823,6 +2836,19 @@ void BuildTableSettingsOrchidYson(const TTableSettings& options, NYTree::TFluent
             .EndAttributes()
             .Value(options.HunkReaderConfig);
 }
+
+IThroughputThrottlerPtr GetBlobMediumWriteThrottler(
+    const NClusterNode::TClusterNodeDynamicConfigManagerPtr& dynamicConfigManager,
+    const TTabletSnapshotPtr& tabletSnapshot)
+{
+    auto mediumThrottlersConfig = dynamicConfigManager->GetConfig()->TabletNode->MediumThrottlers;
+    if (!mediumThrottlersConfig->EnableBlobThrottling) {
+        return GetUnlimitedThrottler();
+    }
+
+    return tabletSnapshot->DistributedThrottlers[ETabletDistributedThrottlerKind::BlobMediumWrite];
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 

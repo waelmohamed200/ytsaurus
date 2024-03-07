@@ -21,23 +21,24 @@ target_link_libraries(server-lib-misc PUBLIC
   yt-library-coredumper
   yt-library-process
   yt-library-ytprof
+  library-ytprof-allocation_tag_profiler
   library-cpp-porto
 )
 target_sources(server-lib-misc PRIVATE
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/address_helpers.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/archive_reporter.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/cluster_connection.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/config.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/disk_health_checker.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/disk_change_checker.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/fork_executor.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/format_manager.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/job_table_schema.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/private.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/profiling_helpers.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/restart_manager.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/job_reporter.cpp
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/job_report.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/address_helpers.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/archive_reporter.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/cluster_connection.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/config.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/disk_health_checker.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/disk_change_checker.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/fork_executor.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/format_manager.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/job_table_schema.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/private.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/profiling_helpers.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/restart_manager.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/job_reporter.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/job_report.cpp
 )
 
 add_global_library_for(server-lib-misc.global server-lib-misc)
@@ -53,8 +54,9 @@ target_link_libraries(server-lib-misc.global PUBLIC
   yt-library-coredumper
   yt-library-process
   yt-library-ytprof
+  library-ytprof-allocation_tag_profiler
   library-cpp-porto
 )
 target_sources(server-lib-misc.global PRIVATE
-  ${CMAKE_SOURCE_DIR}/yt/yt/server/lib/misc/public.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/lib/misc/public.cpp
 )

@@ -54,6 +54,12 @@ std::unique_ptr<IMultiMapper> GenerateMultipleColumns(const TTable& table, int R
                 table,
                 TDataColumn{columnName, type, std::nullopt}));
     }
+    randomColumns.push_back(std::make_unique<TGenerateRandomRowMapper>(
+            table,
+            TDataColumn{"X10", NProto::EColumnType::EInt8, std::nullopt}));
+    randomColumns.push_back(std::make_unique<TGenerateRandomRowMapper>(
+            table,
+            TDataColumn{"X11", NProto::EColumnType::EInt8, std::nullopt}));
 
     std::vector<std::unique_ptr<IRowMapper>> singleOperations;
     singleOperations.push_back(std::make_unique<TSetSeedRowMapper>(table, 0, seed));
@@ -75,7 +81,7 @@ std::unique_ptr<IMultiMapper> FilterByInt8(const TTable& table, int8_t value)
 }
 
 std::unique_ptr<IMultiMapper> CreateRandomMap(
-    std::mt19937& randomEngine, int seed, const TTable& table, const TStoredDataset& info)
+    std::mt19937_64& randomEngine, int seed, const TTable& table, const TStoredDataset& info)
 {
     NYT::NLogging::TLogger Logger("test");
     if (info.TotalBytes < 20000) {

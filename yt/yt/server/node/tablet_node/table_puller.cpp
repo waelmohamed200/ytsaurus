@@ -141,12 +141,10 @@ public:
         , LocalConnection_(std::move(localConnection))
         , Slot_(std::move(slot))
         , TabletSnapshotStore_(std::move(tabletSnapshotStore))
-        , ChaosAgent_(tablet->GetChaosAgent())
         , WorkerInvoker_(std::move(workerInvoker))
         , TabletId_(tablet->GetId())
         , MountRevision_(tablet->GetMountRevision())
         , TableSchema_(tablet->GetTableSchema())
-        , VersionedWriteSchema_(TableSchema_->ToVersionedWrite())
         , MountConfig_(tablet->GetSettings().MountConfig)
         , ReplicaId_(tablet->GetUpstreamReplicaId())
         , PivotKey_(tablet->GetPivotKey())
@@ -188,13 +186,11 @@ private:
     const NNative::IConnectionPtr LocalConnection_;
     const ITabletSlotPtr Slot_;
     const ITabletSnapshotStorePtr TabletSnapshotStore_;
-    const IChaosAgentPtr ChaosAgent_;
     const IInvokerPtr WorkerInvoker_;
 
     const TTabletId TabletId_;
     const TRevision MountRevision_;
     const TTableSchemaPtr TableSchema_;
-    const TTableSchemaPtr VersionedWriteSchema_;
     const TTableMountConfigPtr MountConfig_;
     const TReplicaId ReplicaId_;
     const TLegacyOwningKey PivotKey_;
@@ -202,7 +198,6 @@ private:
 
     const NLogging::TLogger Logger;
 
-    const IThroughputThrottlerPtr NodeInThrottler_;
     const IThroughputThrottlerPtr Throttler_;
 
     TBannedReplicaTracker BannedReplicaTracker_;

@@ -225,8 +225,8 @@ inline int roaring_leading_zeroes(unsigned long long input_num) {
 #ifndef CROARING_INTRINSICS
 #define CROARING_INTRINSICS 1
 #define roaring_unreachable __builtin_unreachable()
-static inline int roaring_trailing_zeroes(unsigned long long input_num) { return __builtin_ctzll(input_num); }
-static inline int roaring_leading_zeroes(unsigned long long input_num) { return __builtin_clzll(input_num); }
+inline int roaring_trailing_zeroes(unsigned long long input_num) { return __builtin_ctzll(input_num); }
+inline int roaring_leading_zeroes(unsigned long long input_num) { return __builtin_clzll(input_num); }
 #endif
 
 #if CROARING_REGULAR_VISUAL_STUDIO
@@ -382,7 +382,7 @@ static inline int roaring_hamming(uint64_t x) {
  #if defined(__APPLE__) || defined(__FreeBSD__) // defined __BYTE_ORDER__ && defined __ORDER_BIG_ENDIAN__
  #include <machine/endian.h>
  #elif defined(sun) || defined(__sun) // defined(__APPLE__) || defined(__FreeBSD__)
- #include <sys/byteorder.h>
+ #error #include <sys/byteorder.h>
  #else  // defined(__APPLE__) || defined(__FreeBSD__)
 
  #ifdef __has_include
