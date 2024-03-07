@@ -56,14 +56,20 @@ public:
     {
         YT_VERIFY(ForeignInputDataWeight_ >= 0);
 
-        if (SamplingConfig_ && SamplingConfig_->SamplingRate) {
+        if (GetSamplingRateImpl()) {
             InitializeSampling();
         }
     }
 
+    std::optional<double> GetSamplingRateImpl() const
+    {
+        // NB(achulkov2): Setting batch_row_count disables sampling.
+        return SamplingConfig_ && !Spec_->BatchRowCount ? SamplingConfig_->SamplingRate : std::nullopt;
+    }
+
     std::optional<double> GetSamplingRate() const override
     {
-        return SamplingConfig_ ? SamplingConfig_->SamplingRate : std::nullopt;
+        return GetSamplingRateImpl();
     }
 
     i64 GetSamplingDataWeightPerJob() const override
@@ -90,7 +96,7 @@ public:
 
     i64 GetInputSliceDataWeight() const override
     {
-        auto dataWeightPerJob = (SamplingConfig_ && SamplingConfig_->SamplingRate)
+        auto dataWeightPerJob = GetSamplingRate()
             ? GetSamplingDataWeightPerJob()
             : GetDataWeightPerJob();
 
@@ -139,6 +145,11 @@ public:
         return JobCount_ > 0
             ? DivCeil(InputRowCount_, JobCount_)
             : 1;
+    }
+
+    i64 GetBatchRowCount() const override
+    {
+        return Spec_->BatchRowCount;
     }
 
     int GetJobCount() const override
@@ -846,6 +857,7 @@ IJobSizeConstraintsPtr CreatePartitionBoundSortedJobSizeConstraints(
         spec->MaxPrimaryDataWeightPerJob,
         std::numeric_limits<i64>::max() / 4 /* inputSliceDataSize */,
         std::numeric_limits<i64>::max() / 4 /* inputSliceRowCount */,
+        0 /* batchRowCount */,
         0 /* foreignSliceDataWeight */,
         std::nullopt /* samplingRate */);
 }

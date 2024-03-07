@@ -794,6 +794,10 @@ void TOperationSpecBase::Register(TRegistrar registrar)
     registrar.Parameter("adjust_dynamic_table_data_slices", &TThis::AdjustDynamicTableDataSlices)
         .Default(false);
 
+    registrar.Parameter("batch_row_count", &TThis::BatchRowCount)
+        .Default(0)
+        .GreaterThanOrEqual(0);
+
     registrar.Postprocessor([] (TOperationSpecBase* spec) {
         if (spec->UnavailableChunkStrategy == EUnavailableChunkAction::Wait &&
             spec->UnavailableChunkTactics == EUnavailableChunkAction::Skip)

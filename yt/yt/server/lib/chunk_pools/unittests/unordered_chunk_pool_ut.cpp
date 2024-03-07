@@ -74,6 +74,7 @@ protected:
             0 /* maxPrimaryDataWeightPerJob */,
             InputSliceDataSize_,
             InputSliceRowCount_,
+            0 /* batchRowCount */,
             0 /* foreignSliceDataWeight */,
             SamplingRate_);
     }

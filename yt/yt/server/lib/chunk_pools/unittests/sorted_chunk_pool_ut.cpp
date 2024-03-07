@@ -85,6 +85,7 @@ protected:
             MaxPrimaryDataWeightPerJob_,
             InputSliceDataWeight_,
             Inf64 /* inputSliceRowCount */,
+            0 /* batchRowCount */,
             InputSliceDataWeight_,
             SamplingRate_,
             SamplingDataWeightPerJob_,

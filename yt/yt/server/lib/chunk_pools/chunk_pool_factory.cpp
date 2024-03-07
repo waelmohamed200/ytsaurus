@@ -94,6 +94,11 @@ public:
         return InfiniteCount;
     }
 
+    i64 GetBatchRowCount() const override
+    {
+        return 0;
+    }
+
     i64 GetForeignSliceDataWeight() const override
     {
         return 0;

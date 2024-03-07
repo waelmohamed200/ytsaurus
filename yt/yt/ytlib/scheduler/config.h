@@ -1082,6 +1082,11 @@ public:
 
     bool AdjustDynamicTableDataSlices;
 
+    //! If set, the operation tries to run jobs with row counts divisible by this number.
+    //! Generic, but only supported by operations implemented via an ordered pool: ordered map and ordered merge.
+    //! NB: Prohibits job interrupts, chunk teleportation and sampling.
+    i64 BatchRowCount;
+
     REGISTER_YSON_STRUCT(TOperationSpecBase);
 
     static void Register(TRegistrar registrar);
