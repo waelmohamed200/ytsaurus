@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/bin/bash -ex
 
 pip3 install wheel auditwheel patchelf
 
