@@ -61,10 +61,11 @@ public:
         }
     }
 
+    // NB: Helper method to avoid calling virtual method from constructor.
+    // Even though it should be technically fine in this case.
     std::optional<double> GetSamplingRateImpl() const
     {
-        // NB(achulkov2): Setting batch_row_count disables sampling.
-        return SamplingConfig_ && !Spec_->BatchRowCount ? SamplingConfig_->SamplingRate : std::nullopt;
+        return SamplingConfig_ ? SamplingConfig_->SamplingRate : std::nullopt;
     }
 
     std::optional<double> GetSamplingRate() const override
@@ -147,7 +148,7 @@ public:
             : 1;
     }
 
-    i64 GetBatchRowCount() const override
+    std::optional<i64> GetBatchRowCount() const override
     {
         return Spec_->BatchRowCount;
     }
@@ -455,7 +456,7 @@ public:
             spec,
             options,
             logger,
-            std::numeric_limits<i64>::max() / 4 /*inputRowCount*/,
+            /*inputRowCount*/ std::numeric_limits<i64>::max() / 4,
             inputChunkCount,
             mergeInputTableCount,
             mergePrimaryInputTableCount,
@@ -663,9 +664,9 @@ public:
             options,
             logger,
             inputRowCount,
-            std::numeric_limits<i64>::max() / 4 /*inputChunkCount*/,
-            1 /*mergeInputTableCount*/,
-            1 /*primaryMergeInputTableCount*/,
+            /*inputChunkCount*/ std::numeric_limits<i64>::max() / 4,
+            /*mergeInputTableCount*/ 1,
+            /*primaryMergeInputTableCount*/ 1,
             spec->Sampling)
         , Spec_(spec)
         , Options_(options)
@@ -847,19 +848,19 @@ IJobSizeConstraintsPtr CreatePartitionBoundSortedJobSizeConstraints(
     i64 dataWeightPerJob = std::max(minDataWeightPerJob, spec->DataWeightPerSortedJob.value_or(spec->DataWeightPerShuffleJob));
 
     return CreateExplicitJobSizeConstraints(
-        false /*canAdjustDataSizePerJob*/,
-        false /*isExplicitJobCount*/,
-        0 /*jobCount*/,
-        dataWeightPerJob /*dataWeightPerJob*/,
-        dataWeightPerJob /*primaryDataWeightPerJob*/,
+        /*canAdjustDataSizePerJob*/ false,
+        /*isExplicitJobCount*/ false,
+        /*jobCount*/ 0,
+        /*dataWeightPerJob*/ dataWeightPerJob,
+        /*primaryDataWeightPerJob*/ dataWeightPerJob,
         options->MaxDataSlicesPerJob,
         spec->MaxDataWeightPerJob,
         spec->MaxPrimaryDataWeightPerJob,
-        std::numeric_limits<i64>::max() / 4 /*inputSliceDataSize*/,
-        std::numeric_limits<i64>::max() / 4 /*inputSliceRowCount*/,
-        0 /*batchRowCount*/,
-        0 /*foreignSliceDataWeight*/,
-        std::nullopt /*samplingRate*/);
+        /*inputSliceDataSize*/ std::numeric_limits<i64>::max() / 4,
+        /*inputSliceRowCount*/ std::numeric_limits<i64>::max() / 4,
+        /*batchRowCount*/ {},
+        /*foreignSliceDataWeight*/ 0,
+        /*samplingRate*/ std::nullopt);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

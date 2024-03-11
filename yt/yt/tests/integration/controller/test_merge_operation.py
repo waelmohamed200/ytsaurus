@@ -368,7 +368,6 @@ class TestSchedulerMergeCommands(YTEnvSetup):
             assert get(f"#{in_chunk}/@row_count") == get(f"#{out_chunk}/@row_count")
             assert in_chunk != out_chunk
 
-
     @authors("ignat")
     @pytest.mark.parametrize("sort_order", ["ascending", "descending"])
     @pytest.mark.parametrize("combine_chunks", [False, True])

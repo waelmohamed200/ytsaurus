@@ -1102,9 +1102,9 @@ public:
     bool AdjustDynamicTableDataSlices;
 
     //! If set, the operation tries to run jobs with row counts divisible by this number.
-    //! Generic, but only supported by operations implemented via an ordered pool: ordered map and ordered merge.
-    //! NB: Prohibits job interrupts, chunk teleportation and sampling.
-    i64 BatchRowCount;
+    //! Generic, but only supported by operations for which you can specify ordered=%true (Map, Merge, MapReduce, Erase).
+    //! NB: Disables job interrupts and chunk teleportation. Cannot be used together with input sampling.
+    std::optional<i64> BatchRowCount;
 
     //! If explicitly true, allow remote copy of tables with hunk columns.
     std::optional<bool> BypassHunkRemoteCopyProhibition;

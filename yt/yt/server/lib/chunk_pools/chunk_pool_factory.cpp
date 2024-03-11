@@ -94,9 +94,9 @@ public:
         return InfiniteCount;
     }
 
-    i64 GetBatchRowCount() const override
+    std::optional<i64> GetBatchRowCount() const override
     {
-        return 0;
+        return {};
     }
 
     i64 GetForeignSliceDataWeight() const override

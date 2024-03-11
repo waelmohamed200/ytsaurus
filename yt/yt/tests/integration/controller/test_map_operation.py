@@ -1588,10 +1588,10 @@ print(json.dumps(input))
         create("table", "//tmp/t_input")
         create("table", "//tmp/t_output")
 
-        completely_random_chunk_sizes = [15, 43, 57, 179, 2, 239, 13, 29, 315]
+        chunk_sizes = [15, 43, 57, 179, 2, 239, 13, 29, 315]
         original_data = [
-            [{"chunk": chunk_index, "index": i} for i in range(completely_random_chunk_sizes[chunk_index])]
-            for chunk_index in range(len(completely_random_chunk_sizes))
+            [{"chunk": chunk_index, "index": i} for i in range(chunk_sizes[chunk_index])]
+            for chunk_index in range(len(chunk_sizes))
         ]
         for rows in original_data:
             write_table("<append=true>//tmp/t_input", rows)

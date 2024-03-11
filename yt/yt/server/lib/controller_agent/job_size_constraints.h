@@ -38,7 +38,7 @@ struct IJobSizeConstraints
 
     //! A recommendation for the number of rows fed to each job to be divisible by this number.
     //! Disables job interrupts, chunk teleportation and sampling.
-    virtual i64 GetBatchRowCount() const = 0;
+    virtual std::optional<i64> GetBatchRowCount() const = 0;
 
     //! Approximate size of a foreign data slice. Has meaning only in context of sorted operation.
     virtual i64 GetForeignSliceDataWeight() const = 0;
@@ -85,7 +85,7 @@ IJobSizeConstraintsPtr CreateExplicitJobSizeConstraints(
     i64 maxPrimaryDataWeightPerJob,
     i64 inputSliceDataWeight,
     i64 inputSliceRowCount,
-    i64 batchRowCount,
+    std::optional<i64> batchRowCount,
     i64 foreignSliceDataWeight,
     std::optional<double> samplingRate,
     i64 samplingDataWeightPerJob = -1,

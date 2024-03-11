@@ -23,7 +23,7 @@ public:
         i64 maxPrimaryDataWeightPerJob,
         i64 inputSliceDataWeight,
         i64 inputSliceRowCount,
-        i64 batchRowCount,
+        std::optional<i64> batchRowCount,
         i64 foreignSliceDataWeight,
         std::optional<double> samplingRate,
         i64 samplingDataWeightPerJob,
@@ -105,7 +105,7 @@ public:
         return InputSliceRowCount_;
     }
 
-    i64 GetBatchRowCount() const override
+    std::optional<i64> GetBatchRowCount() const override
     {
         return BatchRowCount_;
     }
@@ -117,7 +117,7 @@ public:
 
     std::optional<double> GetSamplingRate() const override
     {
-        return !BatchRowCount_ ? SamplingRate_ : std::nullopt;
+        return SamplingRate_;
     }
 
     i64 GetSamplingDataWeightPerJob() const override
@@ -165,7 +165,12 @@ public:
         Persist(context, MaxPrimaryDataWeightPerJob_);
         Persist(context, InputSliceDataWeight_);
         Persist(context, InputSliceRowCount_);
-        Persist(context, BatchRowCount_);
+        // NB: ESnapshotVersion::NodeJobStartTimeInJoblet is the first 24.1 snapshot version.
+        if ((context.GetVersion() >= ESnapshotVersion::BatchRowCount_23_2 && context.GetVersion() < ESnapshotVersion::NodeJobStartTimeInJoblet) ||
+            context.GetVersion() >= ESnapshotVersion::BatchRowCount_24_1)
+        {
+            Persist(context, BatchRowCount_);
+        }
         Persist(context, ForeignSliceDataWeight_);
         Persist(context, SamplingRate_);
         Persist(context, SamplingDataWeightPerJob_);
@@ -195,7 +200,7 @@ private:
     i64 MaxPrimaryDataWeightPerJob_;
     i64 InputSliceDataWeight_;
     i64 InputSliceRowCount_;
-    i64 BatchRowCount_;
+    std::optional<i64> BatchRowCount_;
     i64 ForeignSliceDataWeight_;
     std::optional<double> SamplingRate_;
     i64 SamplingDataWeightPerJob_;
@@ -220,7 +225,7 @@ IJobSizeConstraintsPtr CreateExplicitJobSizeConstraints(
     i64 maxPrimaryDataWeightPerJob,
     i64 inputSliceDataWeight,
     i64 inputSliceRowCount,
-    i64 batchRowCount,
+    std::optional<i64> batchRowCount,
     i64 foreignSliceDataWeight,
     std::optional<double> samplingRate,
     i64 samplingDataWeightPerJob,

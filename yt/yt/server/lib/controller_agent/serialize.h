@@ -38,8 +38,10 @@ DEFINE_ENUM(ESnapshotVersion,
     ((NewLivePreview)                       (301306))
     ((LivePreviewAnnotation)                (301307))
     ((JobErrorInJobSummary)                 (301308))
+    ((BatchRowCount_23_2)                   (301309))
     // 24.1 starts here
     ((NodeJobStartTimeInJoblet)             (301408))
+    ((BatchRowCount_24_1)                   (301409))
 );
 
 ////////////////////////////////////////////////////////////////////////////////

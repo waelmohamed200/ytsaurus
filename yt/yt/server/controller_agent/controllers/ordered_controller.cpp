@@ -288,7 +288,7 @@ protected:
             }
 
             // Setting batch_row_count disables interrupts since they make it much harder to fullfil the divisibility conditions.
-            if (Controller_->JobSizeConstraints_->GetBatchRowCount() != 0) {
+            if (Controller_->JobSizeConstraints_->GetBatchRowCount()) {
                 return false;
             }
 
