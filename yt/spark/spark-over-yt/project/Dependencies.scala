@@ -1,10 +1,10 @@
 import sbt._
-import spyt.SparkForkVersion.sparkForkVersion
 
 object Dependencies {
   lazy val circeVersion = "0.12.3"
   lazy val circeYamlVersion = "0.12.0"
   lazy val scalatestVersion = "3.1.0"
+  lazy val livyVersion = "0.8.0-incubating"
   lazy val sparkVersion = "3.2.2"
   lazy val ytsaurusClientVersion = "1.2.1"
   lazy val scalatraVersion = "2.7.0"
@@ -49,12 +49,9 @@ object Dependencies {
       ExclusionRule(organization = "org.scalatest")
   )
 
-  lazy val spark = Seq(
-    "tech.ytsaurus.spark" %% "spark-core",
-    "tech.ytsaurus.spark" %% "spark-sql"
-  ).map(_ % sparkForkVersion).map(_ excludeAll
-    ExclusionRule(organization = "org.apache.httpcomponents")
-  ).map(_ % Provided)
+  lazy val spark = Seq("spark-core", "spark-sql").map { module =>
+    "org.apache.spark" %% module % sparkVersion % Provided
+  }
 
   lazy val sparkTest = Seq(
     "org.apache.spark" %% "spark-core" % sparkVersion % Test classifier "tests"
@@ -87,7 +84,7 @@ object Dependencies {
   )
 
   lazy val livy = Seq(
-    "org.apache.livy" % "livy-server" % "0.8.0-incubating" % Provided excludeAll(
+    "org.apache.livy" % "livy-assembly" % livyVersion % Provided excludeAll(
       ExclusionRule(organization = "org.json4s"),
       ExclusionRule(organization = "org.scala-lang.modules"),
       ExclusionRule(organization = "com.fasterxml.jackson.module"),

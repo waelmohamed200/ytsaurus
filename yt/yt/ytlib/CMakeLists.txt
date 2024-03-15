@@ -1284,6 +1284,7 @@ target_sources(yt-yt-ytlib PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/hydra/config.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/hydra/helpers.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/hydra/peer_channel.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/hydra/peer_discovery.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/incumbent_client/incumbent_descriptor.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/incumbent_client/public.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/job_prober_client/job_shell_descriptor_cache.cpp
@@ -1400,6 +1401,7 @@ target_sources(yt-yt-ytlib PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/table_client/columnar_chunk_reader_base.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/table_client/columnar_statistics_fetcher.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/table_client/config.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/table_client/dictionary_compression_session.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/table_client/helpers.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/table_client/hunks.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/ytlib/table_client/indexed_versioned_chunk_reader.cpp

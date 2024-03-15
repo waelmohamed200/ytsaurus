@@ -877,7 +877,10 @@ private:
             NodeMemoryReferenceTracker_,
             DataNodeProfiler.WithPrefix("/block_cache"));
 
-        BusServer_ = CreateBusServer(Config_->BusServer);
+        BusServer_ = CreateBusServer(
+            Config_->BusServer,
+            GetYTPacketTranscoderFactory(MemoryUsageTracker_->WithCategory(EMemoryCategory::Rpc)),
+            MemoryUsageTracker_->WithCategory(EMemoryCategory::Rpc));
 
         RpcServer_ = NRpc::NBus::CreateBusServer(BusServer_);
         RpcServer_->Configure(Config_->RpcServer);
@@ -1210,7 +1213,7 @@ private:
     {
         VERIFY_THREAD_AFFINITY_ANY();
 
-        return IYPathService::FromProducer(BIND([this](NYson::IYsonConsumer* consumer) {
+        return IYPathService::FromProducer(BIND([this] (NYson::IYsonConsumer* consumer) {
             BuildYsonFluently(consumer)
                 .Value(GetSecondaryMasterConnectionConfigs());
         }))->Via(GetControlInvoker());
@@ -1472,7 +1475,8 @@ private:
         }
     }
 
-    void InitProxyingChunkService(const NApi::NNative::TMasterConnectionConfigPtr& config) {
+    void InitProxyingChunkService(const NApi::NNative::TMasterConnectionConfigPtr& config)
+    {
         auto service = CreateProxyingChunkService(
             config->CellId,
             Config_->ProxyingChunkService,
@@ -1521,7 +1525,7 @@ private:
             }
         }
 
-        YT_LOG_DEBUG(
+        YT_LOG_INFO(
             "Received new master cell cluster configuration (ReconfiguredCellTags: %v)",
             reconfiguredCellTags);
     }

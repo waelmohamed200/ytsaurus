@@ -41,7 +41,8 @@ DEFINE_ENUM(ESnapshotVersion,
     ((BatchRowCount_23_2)                   (301309))
     // 24.1 starts here
     ((NodeJobStartTimeInJoblet)             (301408))
-    ((BatchRowCount_24_1)                   (301409))
+    ((JobAbortsUntilOperationFailure)       (301409))
+    ((BatchRowCount_24_1)                   (301410))            
 );
 
 ////////////////////////////////////////////////////////////////////////////////

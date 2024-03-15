@@ -87,6 +87,7 @@
 #include <yt/yt/server/master/security_server/security_manager.h>
 
 #include <yt/yt/server/master/sequoia_server/sequoia_manager.h>
+#include <yt/yt/server/master/sequoia_server/sequoia_queue_manager.h>
 #include <yt/yt/server/master/sequoia_server/sequoia_transaction_service.h>
 
 #include <yt/yt/server/master/table_server/table_manager.h>
@@ -447,6 +448,11 @@ const IObjectManagerPtr& TBootstrap::GetObjectManager() const
     return ObjectManager_;
 }
 
+const IObjectServicePtr& TBootstrap::GetObjectService() const
+{
+    return ObjectService_;
+}
+
 const IYsonInternRegistryPtr& TBootstrap::GetYsonInternRegistry() const
 {
     return YsonInternRegistry_;
@@ -460,6 +466,11 @@ const IRequestProfilingManagerPtr& TBootstrap::GetRequestProfilingManager() cons
 const IChunkManagerPtr& TBootstrap::GetChunkManager() const
 {
     return ChunkManager_;
+}
+
+const ISequoiaQueueManagerPtr& TBootstrap::GetSequoiaQueueManager() const
+{
+    return SequoiaQueueManager_;
 }
 
 const IJournalManagerPtr& TBootstrap::GetJournalManager() const
@@ -924,6 +935,8 @@ void TBootstrap::DoInitialize()
 
     ZookeeperManager_ = CreateZookeeperManager(this);
 
+    SequoiaQueueManager_ = CreateSequoiaQueueManager(this);
+
     InitializeTimestampProvider();
 
     if (MulticellManager_->IsPrimaryMaster() && Config_->EnableTimestampManager) {
@@ -972,6 +985,7 @@ void TBootstrap::DoInitialize()
     SchedulerPoolManager_->Initialize();
     ZookeeperBootstrap_->Initialize();
     ZookeeperManager_->Initialize();
+    SequoiaQueueManager_->Initialize();
     GraftingManager_->Initialize();
     SequoiaActionsExecutor_->Initialize();
 

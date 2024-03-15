@@ -133,6 +133,7 @@ public:
     const IEpochHistoryManagerPtr& GetEpochHistoryManager() const;
     const IWorldInitializerPtr& GetWorldInitializer() const;
     const NObjectServer::IObjectManagerPtr& GetObjectManager() const;
+    const NObjectServer::IObjectServicePtr& GetObjectService() const;
     const NObjectServer::IYsonInternRegistryPtr& GetYsonInternRegistry() const;
     const NObjectServer::IRequestProfilingManagerPtr& GetRequestProfilingManager() const;
     const NChunkServer::IChunkManagerPtr& GetChunkManager() const;
@@ -145,6 +146,7 @@ public:
     const NTabletServer::IBackupManagerPtr& GetBackupManager() const;
     const NChaosServer::IChaosManagerPtr& GetChaosManager() const;
     const NSequoiaServer::ISequoiaManagerPtr& GetSequoiaManager() const;
+    const NSequoiaServer::ISequoiaQueueManagerPtr& GetSequoiaQueueManager() const;
     const NHiveServer::IHiveManagerPtr& GetHiveManager() const;
     const NHiveClient::ICellDirectoryPtr& GetCellDirectory() const;
     const NHiveServer::TSimpleAvenueDirectoryPtr& GetAvenueDirectory() const;
@@ -242,6 +244,7 @@ protected:
     NTabletServer::IReplicatedTableTrackerStateProviderPtr ReplicatedTableTrackerStateProvider_;
     NChaosServer::IChaosManagerPtr ChaosManager_;
     NSequoiaServer::ISequoiaManagerPtr SequoiaManager_;
+    NSequoiaServer::ISequoiaQueueManagerPtr SequoiaQueueManager_;
     NHiveServer::IHiveManagerPtr HiveManager_;
     NHiveClient::ICellDirectoryPtr CellDirectory_;
     NHiveServer::TSimpleAvenueDirectoryPtr AvenueDirectory_;

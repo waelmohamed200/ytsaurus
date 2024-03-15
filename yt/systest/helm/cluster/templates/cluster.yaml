@@ -5,6 +5,7 @@ metadata:
 spec:
   coreImage: {{ .Values.YtsaurusImagePath }}
   uiImage: ytsaurus/ui:stable
+  enableFullUpdate: true
 
   adminCredentials:
     name: ytadminsec
@@ -42,7 +43,7 @@ spec:
 
   rpcProxies:
     - serviceType: LoadBalancer
-      instanceCount: 1
+      instanceCount: 3
 
   dataNodes:
     - instanceCount: 10

@@ -5,6 +5,7 @@
 #include "chunk_state.h"
 #include "columnar_chunk_reader_base.h"
 #include "config.h"
+#include "dictionary_compression_session.h"
 #include "granule_filter.h"
 #include "helpers.h"
 #include "hunks.h"
@@ -156,6 +157,7 @@ std::vector<IReaderFactoryPtr> CreateReaderFactories(
         chunkReaderHost->Client,
         CreateTrivialNodeStatusDirectory(),
         /*profiler*/ {},
+        /*mediumThrottler*/ GetUnlimitedThrottler(),
         /*throttlerProvider*/ {});
 
     std::vector<IReaderFactoryPtr> factories;
@@ -163,10 +165,16 @@ std::vector<IReaderFactoryPtr> CreateReaderFactories(
         const auto& dataSource = dataSourceDirectory->DataSources()[dataSliceDescriptor.GetDataSourceIndex()];
 
         auto wrapReader = [=] (ISchemalessChunkReaderPtr chunkReader) {
+            auto dictionaryCompressionFactory = CreateSimpleDictionaryCompressionFactory(
+                chunkFragmentReader,
+                config,
+                nameTable,
+                chunkReaderHost);
             return CreateHunkDecodingSchemalessChunkReader(
                 config,
                 std::move(chunkReader),
                 chunkFragmentReader,
+                std::move(dictionaryCompressionFactory),
                 dataSource.Schema(),
                 chunkReadOptions);
         };
@@ -1349,12 +1357,19 @@ ISchemalessMultiChunkReaderPtr CreateAppropriateSchemalessMultiChunkReader(
                 chunkReaderHost->Client,
                 CreateTrivialNodeStatusDirectory(),
                 /*profiler*/ {},
+                /*mediumThrottler*/ GetUnlimitedThrottler(),
                 /*throttlerProvider*/ {});
+            auto dictionaryCompressionFactory = CreateSimpleDictionaryCompressionFactory(
+                chunkFragmentReader,
+                config,
+                nameTable,
+                chunkReaderHost);
 
             return CreateHunkDecodingSchemalessMultiChunkReader(
                 config,
                 std::move(reader),
                 std::move(chunkFragmentReader),
+                std::move(dictionaryCompressionFactory),
                 dataSource.Schema(),
                 chunkReadOptions);
         }

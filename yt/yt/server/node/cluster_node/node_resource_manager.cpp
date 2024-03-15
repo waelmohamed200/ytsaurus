@@ -552,12 +552,21 @@ void TNodeResourceManager::UpdateMemoryLimits()
     if (totalMemory >= freeMemoryWatermark) {
         totalMemory -= freeMemoryWatermark;
     } else {
-        YT_LOG_WARNING("Free memory watermark more than total memory (FreeMemoryWatermark: %v, TotalMemory: %v)",
+        YT_LOG_WARNING(
+            "Free memory watermark more than total memory (FreeMemoryWatermark: %v, TotalMemory: %v)",
             freeMemoryWatermark,
             totalMemory);
     }
 
-    memoryUsageTracker->SetTotalLimit(totalMemory);
+    if (auto oldMemoryLimit = memoryUsageTracker->GetTotalLimit(); totalMemory != oldMemoryLimit) {
+        YT_LOG_INFO(
+            "Setting new memory limit (OldMemoryLimit: %v, NewMemoryLimit: %v, FreeMemoryWatermark: %v)",
+            oldMemoryLimit,
+            totalMemory,
+            freeMemoryWatermark);
+
+        memoryUsageTracker->SetTotalLimit(totalMemory);
+    }
 
     for (auto category : TEnumTraits<EMemoryCategory>::GetDomainValues()) {
         const auto& limit = limits[category];
@@ -569,7 +578,8 @@ void TNodeResourceManager::UpdateMemoryLimits()
         auto newLimit = *limit->Value;
 
         if (std::abs(oldLimit - newLimit) > config->MemoryAccountingTolerance) {
-            YT_LOG_INFO("Updating memory category limit (Category: %v, OldLimit: %v, NewLimit: %v)",
+            YT_LOG_INFO(
+                "Updating memory category limit (Category: %v, OldLimit: %v, NewLimit: %v)",
                 category,
                 oldLimit,
                 newLimit);
@@ -616,13 +626,14 @@ void TNodeResourceManager::UpdateMemoryFootprint()
     auto oldFootprint = memoryUsageTracker->UpdateUsage(EMemoryCategory::Footprint, newFootprint);
     auto oldFragmentation = memoryUsageTracker->UpdateUsage(EMemoryCategory::AllocFragmentation, newFragmentation);
 
-    YT_LOG_INFO("Memory footprint updated (BytesCommitted: %v, BytesUsed: %v, Footprint: %v -> %v, Fragmentation: %v -> %v)",
+    YT_LOG_INFO("Memory footprint updated (BytesCommitted: %v, BytesUsed: %v, Footprint: %v -> %v, Fragmentation: %v -> %v, Rpc: %v)",
         bytesCommitted,
         bytesUsed,
         oldFootprint,
         newFootprint,
         oldFragmentation,
-        newFragmentation);
+        newFragmentation,
+        memoryUsageTracker->GetUsed(EMemoryCategory::Rpc));
 }
 
 void TNodeResourceManager::UpdateJobsCpuLimit()

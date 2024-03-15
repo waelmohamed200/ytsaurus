@@ -199,6 +199,9 @@ struct IHydraManager
 
     virtual bool GetReadOnly() const = 0;
 
+    virtual bool IsDiscombobulated() const = 0;
+
+    virtual i64 GetSequenceNumber() const = 0;
 
     //! Raised during periodic leader lease checks.
     //! A subscriber must start an appropriate check and return a future

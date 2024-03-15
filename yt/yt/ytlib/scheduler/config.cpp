@@ -1167,6 +1167,10 @@ void TUserJobSpec::Register(TRegistrar registrar)
         if (spec->Profilers) {
             ValidateProfilers(*spec->Profilers);
         }
+
+        if (spec->UseYamrDescriptors && spec->RedirectStdoutToStderr) {
+            THROW_ERROR_EXCEPTION("Uncompatible options \"use_yamr_descriptors\" and \"redirect_stdout_to_stderr\" are both set");
+        }
     });
 }
 
@@ -2567,7 +2571,7 @@ void TJobCpuMonitorConfig::Register(TRegistrar registrar)
 void TOffloadingPoolSettingsConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("pool", &TThis::Pool)
-        .NonEmpty();
+        .Default();
 
     registrar.Parameter("weight", &TThis::Weight)
         .Optional()
