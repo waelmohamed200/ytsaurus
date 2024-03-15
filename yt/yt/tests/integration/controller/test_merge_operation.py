@@ -349,12 +349,21 @@ class TestSchedulerMergeCommands(YTEnvSetup):
         for i in range(chunk_count):
             write_table("<append=true>//tmp/t_in", rows)
 
+        with pytest.raises(YtError):
+            merge(
+                combine_chunks=False,
+                mode="ordered",
+                in_=["//tmp/t_in"],
+                out="//tmp/t_out",
+                spec={"data_size_per_job": 1, "batch_row_count": 3, "sampling": {"sampling_rate": 0.2}}
+            )
+
         merge(
             combine_chunks=False,
             mode="ordered",
             in_=["//tmp/t_in"],
             out="//tmp/t_out",
-            spec={"data_size_per_job": 1, "batch_row_count": 3, "sampling": {"sampling_rate": 0.2}}
+            spec={"data_size_per_job": 1, "batch_row_count": 3}
         )
 
         assert read_table("//tmp/t_out") == rows * chunk_count

@@ -90,7 +90,7 @@ public:
 
         YT_LOG_DEBUG("Ordered chunk pool created (DataWeightPerJob: %v, MaxDataSlicesPerJob: %v, "
             "InputSliceDataWeight: %v, InputSliceRowCount: %v, BatchRowCount: %v, SingleJob: %v)",
-            JobSizeConstraints_->GetDataWeightPerJob(),
+            GetDataWeightPerJob(),
             JobSizeConstraints_->GetMaxDataSlicesPerJob(),
             JobSizeConstraints_->GetInputSliceDataWeight(),
             JobSizeConstraints_->GetInputSliceRowCount(),
@@ -340,7 +340,7 @@ private:
                 }
 
                 YT_VERIFY(!dataSlice->IsLegacy);
-                AddPrimaryDataSlice(dataSlice, inputCookie, JobSizeConstraints_->GetDataWeightPerJob());
+                AddPrimaryDataSlice(dataSlice, inputCookie, GetDataWeightPerJob());
             }
         }
         EndJob();
@@ -352,7 +352,7 @@ private:
 
         if (JobSizeConstraints_->GetSamplingRate()) {
             JobManager_->Enlarge(
-                JobSizeConstraints_->GetDataWeightPerJob(),
+                GetDataWeightPerJob(),
                 JobSizeConstraints_->GetPrimaryDataWeightPerJob());
         }
 
@@ -404,7 +404,7 @@ private:
     {
         return
             JobSizeConstraints_->GetSamplingRate()
-            ? JobSizeConstraints_->GetSamplingDataWeightPerJob()
+            ? std::max(JobSizeConstraints_->GetDataWeightPerJob(), JobSizeConstraints_->GetSamplingDataWeightPerJob())
             : JobSizeConstraints_->GetDataWeightPerJob();
     }
 
