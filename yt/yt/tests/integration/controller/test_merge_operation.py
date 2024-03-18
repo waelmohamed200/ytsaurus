@@ -311,6 +311,10 @@ class TestSchedulerMergeCommands(YTEnvSetup):
 
     @authors("achulkov2")
     def test_ordered_batch_row_count(self):
+        # TODO(achulkov2): Lower/remove after cherry-picks.
+        if self.Env.get_component_version("ytserver-controller-agent").abi <= (24, 1):
+            pytest.skip()
+
         create("table", "//tmp/t_in")
         create("table", "//tmp/t_out")
 
@@ -340,6 +344,10 @@ class TestSchedulerMergeCommands(YTEnvSetup):
 
     @authors("achulkov2")
     def test_ordered_batch_row_count_disables_teleports_and_sampling(self):
+        # TODO(achulkov2): Lower/remove after cherry-picks.
+        if self.Env.get_component_version("ytserver-controller-agent").abi <= (24, 1):
+            pytest.skip()
+
         create("table", "//tmp/t_in")
         create("table", "//tmp/t_out")
 

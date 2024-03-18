@@ -1585,6 +1585,10 @@ print(json.dumps(input))
 
     @authors("achulkov2")
     def test_batch_row_count(self):
+        # TODO(achulkov2): Lower/remove after cherry-picks.
+        if self.Env.get_component_version("ytserver-controller-agent").abi <= (24, 1):
+            pytest.skip()
+
         create("table", "//tmp/t_input")
         create("table", "//tmp/t_output")
 
