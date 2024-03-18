@@ -269,7 +269,7 @@ private:
         }
     }
 
-    bool IsDataSliceTeleportable(const TLegacyDataSlicePtr& dataSlice) const
+    bool IsTeleportable(const TLegacyDataSlicePtr& dataSlice) const
     {
         if (dataSlice->Type != EDataSourceType::UnversionedTable) {
             return false;
@@ -316,7 +316,7 @@ private:
             const auto& stripe = Stripes_[inputCookie].GetStripe();
             for (const auto& dataSlice : stripe->DataSlices) {
                 yielder.TryYield();
-                if (IsDataSliceTeleportable(dataSlice)) {
+                if (IsTeleportable(dataSlice)) {
                     if (Sampler_.Sample()) {
                         EndJob();
 
@@ -325,7 +325,7 @@ private:
                         JobManager_->AddJob(std::move(CurrentJob()));
 
                         auto inputChunk = dataSlice->GetSingleUnversionedChunk();
-                        ChunkTeleported_.Fire(inputChunk, /*tag=*/std::any{});
+                        ChunkTeleported_.Fire(inputChunk, /*tag*/ std::any{});
                         ++chunksTeleported;
 
                         if (OutputOrder_) {
@@ -445,7 +445,8 @@ private:
         }
 
         // Unbounded dynamic store cannot be split.
-        if (dataSlice->GetSingleUnversionedChunkSlice()->GetInputChunk()->IsOrderedDynamicStore() && !dataSlice->GetSingleUnversionedChunkSlice()->UpperLimit().RowIndex) {
+        if (dataSlice->GetSingleUnversionedChunkSlice()->GetInputChunk()->IsOrderedDynamicStore() &&
+            !dataSlice->GetSingleUnversionedChunkSlice()->UpperLimit().RowIndex) {
             return false;
         }
 

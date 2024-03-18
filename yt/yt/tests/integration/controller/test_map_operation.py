@@ -1596,7 +1596,7 @@ print(json.dumps(input))
         for rows in original_data:
             write_table("<append=true>//tmp/t_input", rows)
 
-        op = map(
+        map(
             in_="//tmp/t_input",
             out="//tmp/t_output",
             command="cat; echo stderr 1>&2",
