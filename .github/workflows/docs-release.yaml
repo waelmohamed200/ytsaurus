@@ -16,6 +16,7 @@ jobs:
         uses: diplodoc-platform/docs-build-action@v3
         with:
           revision: "${{ github.sha }}"
+          src-root: "./yt/docs"
   upload:
     needs: build
     runs-on: ubuntu-latest
