@@ -486,6 +486,11 @@ protected:
         chunkPoolOptions.Logger = Logger.WithTag("Name: Root");
         return chunkPoolOptions;
     }
+
+    TError GetUseChunkSliceStatisticsError() const override
+    {
+        return TError();
+    }
 };
 
 DEFINE_DYNAMIC_PHOENIX_TYPE(TOrderedControllerBase::TOrderedTask);

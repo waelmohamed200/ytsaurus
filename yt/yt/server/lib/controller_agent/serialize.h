@@ -47,6 +47,7 @@ DEFINE_ENUM(ESnapshotVersion,
     ((PersistMonitoringCounts)              (301502))
     ((WaitingForResourcesDuration)          (301503))
     ((ForceAllowJobInterruption)            (301504))
+    ((ChunkSliceStatistics)                 (301505))
 );
 
 ////////////////////////////////////////////////////////////////////////////////

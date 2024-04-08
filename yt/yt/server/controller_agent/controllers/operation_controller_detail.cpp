@@ -70,6 +70,7 @@
 
 #include <yt/yt/ytlib/table_client/chunk_meta_extensions.h>
 #include <yt/yt/ytlib/table_client/chunk_slice_fetcher.h>
+#include <yt/yt/ytlib/table_client/chunk_slice_size_fetcher.h>
 #include <yt/yt/ytlib/table_client/columnar_statistics_fetcher.h>
 #include <yt/yt/ytlib/table_client/helpers.h>
 #include <yt/yt/ytlib/table_client/schema.h>
@@ -6031,6 +6032,19 @@ void TOperationControllerBase::FetchInputTables()
             .Logger = Logger,
         });
 
+    auto chunkSliceSizeFetcher = New<TChunkSliceSizeFetcher>(
+        Config->Fetcher,
+        InputNodeDirectory_,
+        CancelableInvokerPool->GetInvoker(EOperationControllerQueue::Default),
+        /*chunkScraper*/ CreateFetcherChunkScraper(),
+        InputClient,
+        Logger);
+
+    if (auto error = GetUseChunkSliceStatisticsError(); !error.IsOK()) {
+        SetOperationAlert(EOperationAlertType::UseChunkSliceStatisticsDisabled, error);
+        chunkSliceSizeFetcher = nullptr;
+    }
+
     auto chunkSpecFetcher = New<TMasterChunkSpecFetcher>(
         InputClient,
         TMasterReadOptions{},
@@ -6143,10 +6157,36 @@ void TOperationControllerBase::FetchInputTables()
             }
             RegisterInputChunk(table->Chunks.back());
 
+            bool shouldSkipChunkInFetchers = IsUnavailable(inputChunk, GetChunkAvailabilityPolicy()) && Spec_->UnavailableChunkStrategy == EUnavailableChunkAction::Skip;
+
+            // We only fetch chunk slice sizes for unversioned table chunks with non-trivial limits.
+            // We do not fetch slice sizes in cases when ChunkSliceFetcher will later be used, since it performs similar computations and will misuse the scaling factors.
+            // To be more exact, we do not fetch slice sizes in operations that use any of the two sorted controllers.
+            bool willFetchChunkSliceStatistics =
+                !shouldSkipChunkInFetchers &&
+                chunkSliceSizeFetcher &&
+                !table->IsVersioned() &&
+                !inputChunk->IsCompleteChunk() &&
+                Spec_->UseChunkSliceStatistics;
+            if (willFetchChunkSliceStatistics) {
+                YT_VERIFY(!inputChunk->IsFile());
+
+                if (auto columns = table->Path.GetColumns()) {
+                    chunkSliceSizeFetcher->AddChunk(inputChunk, MapNamesToStableNames(*table->Schema, *columns, NonexistentColumnName));
+                } else {
+                    chunkSliceSizeFetcher->AddChunk(inputChunk);
+                }
+            }
+
             // We fetch columnar statistics only for the tables that have column selectors specified.
+            // NB: We do not fetch columnar statistics for chunks for which chunk slice statistics are fetched
+            // because chunk slice statistics already take columns into consideration.
             auto hasColumnSelectors = table->Path.GetColumns().operator bool();
-            bool shouldSkip = IsUnavailable(inputChunk, GetChunkAvailabilityPolicy()) && Spec_->UnavailableChunkStrategy == EUnavailableChunkAction::Skip;
-            if (hasColumnSelectors && Spec_->InputTableColumnarStatistics->Enabled.value_or(Config->UseColumnarStatisticsDefault) && !shouldSkip) {
+            if (!shouldSkipChunkInFetchers &&
+                !willFetchChunkSliceStatistics &&
+                hasColumnSelectors &&
+                Spec_->InputTableColumnarStatistics->Enabled.value_or(Config->UseColumnarStatisticsDefault))
+            {
                 YT_VERIFY(!inputChunk->IsFile());
                 auto stableColumnNames = MapNamesToStableNames(
                     *table->Schema,
@@ -6172,6 +6212,17 @@ void TOperationControllerBase::FetchInputTables()
             .ThrowOnError();
         YT_LOG_INFO("Columnar statistics fetched");
         columnarStatisticsFetcher->ApplyColumnSelectivityFactors();
+    }
+
+    if (chunkSliceSizeFetcher && chunkSliceSizeFetcher->GetChunkCount() > 0) {
+        YT_LOG_INFO("Fetching input chunk slice statistics for input tables (ChunkCount: %v)",
+            chunkSliceSizeFetcher->GetChunkCount());
+        // TODO(achulkov2): Do we need a cancellation stage similar to columnar statistics fetch? It is a testing option.
+        chunkSliceSizeFetcher->SetCancelableContext(GetCancelableContext());
+        WaitFor(chunkSliceSizeFetcher->Fetch())
+            .ThrowOnError();
+        YT_LOG_INFO("Input chunk slice statistics fetched");
+        chunkSliceSizeFetcher->ApplyBlockSelectivityFactors();
     }
 
     YT_LOG_INFO("Finished fetching input tables (TotalChunkCount: %v, TotalExtensionSize: %v, MemoryUsage: %v)",
@@ -8053,6 +8104,11 @@ void TOperationControllerBase::InferInputRanges()
 TError TOperationControllerBase::GetAutoMergeError() const
 {
     return TError("Automatic output merge is not supported for %lv operations", OperationType);
+}
+
+TError TOperationControllerBase::GetUseChunkSliceStatisticsError() const
+{
+    return TError("Fetching chunk slice statistics is not supported for %lv operations", OperationType);
 }
 
 void TOperationControllerBase::FillPrepareResult(TOperationControllerPrepareResult* result)

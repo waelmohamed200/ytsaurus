@@ -1549,16 +1549,35 @@ private:
                     return;
                 }
 
+                TNameTablePtr nameTable;
+                if (request->has_name_table()) {
+                    nameTable = FromProto<TNameTablePtr>(request->name_table());
+                }
+
                 const auto& results = resultsError.Value();
                 YT_VERIFY(std::ssize(results) == requestCount);
 
-                auto keySetWriter = New<TKeySetWriter>();
-
                 for (int requestIndex = 0; requestIndex < requestCount; ++requestIndex) {
+                    const auto& chunkRequest = request->chunk_requests(requestIndex);
+
+                    std::optional<std::vector<TColumnStableName>> columnStableNames;
+
+                    if (chunkRequest.has_column_filter()) {
+                        YT_VERIFY(nameTable);
+
+                        columnStableNames.emplace();
+                        columnStableNames->reserve(chunkRequest.column_filter().indexes_size());
+
+                        for (auto columnIndex : chunkRequest.column_filter().indexes()) {
+                            columnStableNames->push_back(TColumnStableName(TString{nameTable->GetName(columnIndex)}));
+                        }
+                    }
+
                     ProcessSliceSize(
-                        request->chunk_requests(requestIndex),
+                        chunkRequest,
                         response->add_chunk_responses(),
-                        results[requestIndex]);
+                        results[requestIndex],
+                        columnStableNames);
                 }
 
                 context->Reply();
@@ -1568,7 +1587,8 @@ private:
     void ProcessSliceSize(
         const TReqGetChunkSliceDataWeights::TChunkSlice& weightedChunkRequest,
         TRspGetChunkSliceDataWeights::TWeightedChunk* weightedChunkResponse,
-        const TErrorOr<TRefCountedChunkMetaPtr>& metaOrError)
+        const TErrorOr<TRefCountedChunkMetaPtr>& metaOrError,
+        const std::optional<std::vector<TColumnStableName>>& columnStableNames)
     {
         auto chunkId = FromProto<TChunkId>(weightedChunkRequest.chunk_id());
         try {
@@ -1591,7 +1611,8 @@ private:
 
             auto dataWeight = GetChunkSliceDataWeight(
                 weightedChunkRequest,
-                *chunkMeta);
+                *chunkMeta,
+                columnStableNames);
 
             weightedChunkResponse->set_data_weight(dataWeight);
         } catch (const std::exception& ex) {
