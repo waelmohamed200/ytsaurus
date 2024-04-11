@@ -45,4 +45,5 @@ jobs:
           storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
           storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
           src-root: "./yt/docs"
+          server: "https://viewer.ydocs.io
 
