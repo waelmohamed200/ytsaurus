@@ -41,7 +41,7 @@ jobs:
         uses: diplodoc-platform/docs-release-action@v2
         with:
           revision: "${{ github.sha }}"
-          storage-bucket: ${{ vars.DIPLODOC_STORAGE_BUCKET }}-stable
+          storage-bucket: ${{ vars.DIPLODOC_STORAGE_BUCKET }}
           storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
           storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
           src-root: "./yt/docs"
