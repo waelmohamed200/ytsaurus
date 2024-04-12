@@ -369,6 +369,7 @@ public:
     double CacheCapacityFraction;
     int LayerImportConcurrency;
 
+    //! Enable disk quota for porto volumes.
     bool EnableDiskQuota;
 
     TTmpfsLayerCacheConfigPtr RegularTmpfsLayerCache;

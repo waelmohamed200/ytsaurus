@@ -2599,9 +2599,9 @@ TUserSandboxOptions TJob::BuildUserSandboxOptions()
     // NB: this eventually results in job failure.
     options.DiskOverdraftCallback = BIND(&TJob::Fail, MakeWeak(this))
         .Via(Invoker_);
-    options.HasRootFSQuota = false;
     options.EnableArtifactBinds = Config_->UseArtifactBinds;
-    options.EnableDiskQuota = Bootstrap_->GetConfig()->DataNode->VolumeManager->EnableDiskQuota;
+    options.EnableRootVolumeDiskQuota = Bootstrap_->GetConfig()->DataNode->VolumeManager->EnableDiskQuota;
+    options.EnableSandboxDiskQuota = Config_->SlotManager->EnableDiskQuota;
     options.UserId = GetUserSlot()->GetUserId();
 
     if (UserJobSpec_) {
@@ -2640,6 +2640,11 @@ TUserSandboxOptions TJob::BuildUserSandboxOptions()
             THROW_ERROR_EXCEPTION(EErrorCode::QuotaSettingFailed, "Set inode limit must be greater than 0")
                 << TErrorAttribute("inode_limit", options.InodeLimit.value());
         }
+    }
+
+    if (!options.DiskSpaceLimit && !options.InodeLimit) {
+        options.EnableRootVolumeDiskQuota = false;
+        options.EnableSandboxDiskQuota = false;
     }
 
     return options;

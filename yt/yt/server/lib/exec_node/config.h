@@ -172,7 +172,10 @@ class TSlotLocationConfig
     : public TDiskLocationConfig
 {
 public:
+    //! Limit for disk space size.
     std::optional<i64> DiskQuota;
+
+    //! Reserve subtracted from disk space size.
     i64 DiskUsageWatermark;
 
     TString MediumName;
@@ -226,6 +229,9 @@ class TSlotManagerConfig
 public:
     //! Root path for slot directories.
     std::vector<TSlotLocationConfigPtr> Locations;
+
+    //! Enable disk quota for user job sandboxes.
+    bool EnableDiskQuota;
 
     //! Enable using tmpfs on the node.
     bool EnableTmpfs;
